@@ -51,19 +51,25 @@ test('watchCodex follows a session log', async (t) => {
     { timestamp: ts(6), type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1', last_agent_message: 'Fixed it.' } },
   ];
   await writeFile(join(folder, 'rollout-x.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  await writeFile(join(folder, 'rollout-guardian.jsonl'), [
+    { timestamp: ts(0), type: 'session_meta', payload: { id: 'guardian-1', cwd: '/work/proj', source: { subagent: { other: 'guardian' } } } },
+    { timestamp: ts(1), type: 'event_msg', payload: { type: 'user_message', message: 'Internal approval assessment' } },
+  ].map((l) => JSON.stringify(l)).join('\n') + '\n');
 
   const log = createActivityLog();
   const emitted = [];
   const states = [];
+  const metadata = [];
   stop = watchCodex(log, {
     dir,
     interval: 50,
     emit: (entries) => emitted.push(...entries),
     state: (session, label, next) => states.push({ session, label, ...next }),
+    cwd: (...args) => metadata.push(args),
   });
 
   // Poll for up to ~1.5s instead of sleeping a fixed time.
-  for (let i = 0; i < 30 && !log.findLast('codex:sess-1', (x) => x.kind === 'done'); i++) await sleep(50);
+  for (let i = 0; i < 30 && (!log.findLast('codex:sess-1', (x) => x.kind === 'done') || !metadata.some((m) => m[0] === 'codex:guardian-1')); i++) await sleep(50);
   stop();
 
   const session = 'codex:sess-1';
@@ -99,4 +105,8 @@ test('watchCodex follows a session log', async (t) => {
 
   assert.ok(emitted.length >= 4);
   assert.ok(states.some((s) => s.state === 'done' && s.session === session));
+  assert.equal(log.all().some((e) => e.session === 'codex:guardian-1'), false);
+  assert.equal(states.some((s) => s.session === 'codex:guardian-1'), false);
+  assert.equal(metadata.find((m) => m[0] === 'codex:guardian-1')[4], true);
+  assert.equal(metadata.find((m) => m[0] === session)[3], join(folder, 'rollout-x.jsonl'));
 });

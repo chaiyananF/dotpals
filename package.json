@@ -21,13 +21,13 @@
     "svg",
     "cute"
   ],
-  "homepage": "https://github.com/rikinshah787/dotpals#readme",
+  "homepage": "https://github.com/chaiyananF/dotpals#readme",
   "bugs": {
-    "url": "https://github.com/rikinshah787/dotpals/issues"
+    "url": "https://github.com/chaiyananF/dotpals/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rikinshah787/dotpals.git"
+    "url": "git+https://github.com/chaiyananF/dotpals.git"
   },
   "license": "MIT",
   "type": "module",

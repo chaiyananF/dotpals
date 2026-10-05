@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>dotpals dashboard</title>
   <link rel="icon" href="/desktop/icon.png">
+  <link rel="stylesheet" href="/bridge/ui/tasks.css">
   <style>
     :root {
       color-scheme: dark;
@@ -387,6 +388,8 @@
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 13V8M6 13V3M10 13V6M14 13V10"/></svg>Overview</a>
         <a href="#sessions" data-view="sessions">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3.5h10M3 8h10M3 12.5h6"/></svg>Sessions</a>
+        <a href="#tasks" data-view="tasks">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 3h8M6 8h8M6 13h8M2 3h.1M2 8h.1M2 13h.1"/></svg>Tasks</a>
         <a href="#map" data-view="map">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h4M2.5 3.5v9h4M2.5 8h4M9.5 3.5h4M9.5 8h4M9.5 12.5h4"/></svg>Map</a>
         <a href="#agents" data-view="agents">
@@ -443,6 +446,8 @@
           <div class="detail" id="session-detail"></div>
         </div>
       </section>
+
+      <section class="view" id="view-tasks" aria-label="Task registry and mailbox" hidden></section>
 
       <!-- Map ----------------------------------------------------------------- -->
       <section class="view" id="view-map" aria-labelledby="t-map" hidden>
@@ -601,6 +606,7 @@
     } from '/bridge/ui/recap.js';
     import { checkOf, minorChapter, overlaps, readiness, readinessLine, recapMarkdown, retries, simple, stepType, story, testVerdict, testWords, turnMarkdown, whyStopped } from '/bridge/ui/story.js';
     import { continueMenu } from '/bridge/ui/handoff-menu.js';
+    import { mountTasks } from '/bridge/ui/tasks.js';
 
     const $ = (id) => document.getElementById(id);
     const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
@@ -646,6 +652,11 @@
       }
       return res.json();
     }
+    const tasksPanel = mountTasks($('view-tasks'), { api, toast });
+    source.addEventListener('team-task', () => tasksPanel.changed());
+    source.addEventListener('team-message', () => tasksPanel.changed());
+    source.addEventListener('team-dispatch', () => tasksPanel.changed());
+    source.addEventListener('open', () => tasksPanel.changed());
     const refreshStatus = async () => { try { status = await api('/api/status'); renderSettings(); renderAgents(); } catch {} };
     refreshStatus();
     setInterval(() => { if (current === 'settings' || current === 'agents') refreshStatus(); }, 5000);
@@ -659,9 +670,10 @@
       for (const v of VIEWS) $(`view-${v}`).hidden = v !== current;
       for (const a of document.querySelectorAll('nav a')) a.setAttribute('aria-current', a.dataset.view === current ? 'page' : 'false');
       if (current === 'settings' || current === 'agents') refreshStatus();
+      if (current === 'tasks') tasksPanel.activate(id).catch((err) => toast(err.message));
       render();
     }
-    const VIEWS = ['overview', 'sessions', 'map', 'agents', 'settings'];
+    const VIEWS = ['overview', 'sessions', 'tasks', 'map', 'agents', 'settings'];
     addEventListener('hashchange', route);
 
     function render() {

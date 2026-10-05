@@ -1,3 +1,39 @@
+# Dotpals team session center
+
+This repository extends [Rikinshah787/dotpals](https://github.com/Rikinshah787/dotpals)
+with a durable task registry, mailbox and worker dispatch broker. The coordinator
+stays in an existing Codex/Claude app chat; Dotpals stores task/session continuity
+and launches scoped workers. The coordinator reads results, summarizes in the chat
+and waits for the user's next instruction.
+
+## Develop this fork
+
+```powershell
+git clone https://github.com/chaiyananF/dotpals.git
+cd dotpals
+npm install
+.\start-center.ps1
+```
+
+The Windows launcher opens **Tasks** at `http://127.0.0.1:5176/dashboard#tasks`.
+Install/authenticate the provider CLIs separately when you need worker dispatch.
+Each developer gets a private ignored `.dotpals-center/` profile. Configure your
+own team context and provider models; personal chat histories and credentials are
+not included in this repository.
+
+Start with [development handoff](docs/development-handoff.md),
+[chat coordinator operations](docs/chat-coordinator.md),
+[task/mailbox contract](docs/task-mailbox.md) and [agent instructions](AGENTS.md).
+This is a prototype: syntax/diff checks and actual local chat registration/summary
+are recorded; live worker dispatch/resume, independent QA and human acceptance
+remain pending. It does not automatically wake or notify an idle coordinator chat.
+
+The upstream documentation below describes the original Dotpals features/install.
+The prototype is based on upstream commit `1b5c67e`; newer upstream changes have
+not been merged. Upstream attribution and the MIT license are retained.
+
+---
+
 <div align="center">
 
 <img src="desktop/icon.png" width="96" alt="">

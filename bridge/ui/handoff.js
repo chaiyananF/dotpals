@@ -20,7 +20,7 @@ const fenced = (s) => String(s ?? '').replace(/```/g, "'''");
  *   cwd      the session's project folder, if known (paths are shown from it)
  *   file     where the note is saved, if it is (mentioned at the end)
  */
-export function handoffNote(entries, { session, cwd, now = Date.now(), time = (at) => new Date(at).toLocaleString() } = {}) {
+export function handoffNote(entries, { session, cwd, assignment, now = Date.now(), time = (at) => new Date(at).toLocaleString() } = {}) {
   const list = entries.filter((e) => e.session === session).sort((a, b) => a.at - b.at);
   if (!list.length) return null;
   const who = harnessName(list.find((e) => e.harness)?.harness);
@@ -33,7 +33,8 @@ export function handoffNote(entries, { session, cwd, now = Date.now(), time = (a
   const out = [];
 
   out.push(`# Hand-off from ${who}${label ? ` · ${label}` : ''}`, '');
-  out.push(`You're continuing work another agent started. Read this, check the current state (the files below, \`git status\`, the tests), then continue: ${last ? `“${clipTo(firstLine(last), 200)}”` : 'the work described below'}.`, '');
+  const next = assignment?.trim() || last;
+  out.push(`You're continuing work another agent started. Read this, check the current state (the files below, \`git status\`, the tests), then continue: ${next ? `“${clipTo(firstLine(next), 200)}”` : 'the work described below'}.`, '');
 
   if (first) out.push('## The original ask', '', quoted(clipTo(first, 2000)), '');
   if (last && last !== first) out.push('## The last request', '', quoted(clipTo(last, 2000)), '');

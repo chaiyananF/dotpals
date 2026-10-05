@@ -54,7 +54,7 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { extname, join, normalize } from 'node:path';
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { toAgentState } from '../src/agent.js';
 import { clip, clipEnds, createActivityLog, folderName } from './activity.js';
@@ -68,11 +68,17 @@ import { checkerKey, configPath, home, loadConfig, saveConfig, validKey } from '
 import { FILE_TOOLS, ago, alertText, createAlerts, findConflict, guardReason, guardReply, pathKey, who } from './guard.js';
 import { HANDOFF_AGENTS, handoffPrompt, installedAgents, isFolder, launch, launchCommand, onPath, saveNote } from './handoff.js';
 import { handoffNote } from './ui/handoff.js';
+import { findTranscript, readConversation, sameProject, sessionCatalog } from './session-center.js';
+import { createSessionLinks, isSessionId, isSessionModel, sameSession } from './session-links.js';
+import { claudePolicy } from './claude-policy.js';
+import { createTeamStore } from './team-store.js';
+import { createTeamApi } from './team-api.js';
+import { createTeamDispatch } from './team-dispatch.js';
 import { claudeContextSize, readUsage } from './usage.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const version = (() => { try { return JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version; } catch { return '0.0.0'; } })();
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.png': 'image/png' };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css; charset=utf-8', '.png': 'image/png' };
 const KINDS = new Set(['prompt', 'read', 'edit', 'write', 'run', 'search', 'web', 'agent', 'mcp', 'skill', 'plan', 'tool', 'done', 'error', 'compact']);
 const STATUSES = new Set(['running', 'waiting', 'ok', 'failed', 'stopped', 'info']);
 const DAY = 86_400_000;
@@ -142,23 +148,29 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
   const backfilled = new Set();
   const hooked = new Set();    // Claude sessions that send hook events
   const lastSeen = {};        // harness → time of its last event
+  const links = createSessionLinks();
+  const teamStore = createTeamStore();
   let config = loadConfig();
   // Each session's project folder (where it started) and, for a helper with a session of its
   // own, the session that started it: for the hand-off's terminal and the conflict guard.
   // Only ever from the agents' own events and logs, never from an API request. Kept in history.
   const sessionMeta = new Map(); // session → { cwd?, parent? }
-  function noteSession(session, cwd, parent) {
-    if (!session || (!cwd && !parent)) return;
+  function noteSession(session, cwd, parent, transcript, internal, title) {
+    if (!session || (!cwd && !parent && !transcript && !title)) return;
     const m = sessionMeta.get(session) ?? {};
     if (typeof cwd === 'string' && cwd && !m.cwd) m.cwd = cwd;
     if (typeof parent === 'string' && parent && parent !== session) m.parent = parent;
+    if (typeof transcript === 'string' && transcript) m.transcript = transcript;
+    if (typeof internal === 'boolean') m.internal = internal;
+    if (typeof title === 'string' && title.trim()) m.title = title.trim();
     sessionMeta.set(session, m);
   }
   const history = createHistory(activity, () => config, {
     get: () => Object.fromEntries(sessionMeta),
-    set: (saved) => { for (const [id, m] of Object.entries(saved ?? {})) noteSession(id, m?.cwd, m?.parent); },
+    set: (saved) => { for (const [id, m] of Object.entries(saved ?? {})) noteSession(id, m?.cwd, m?.parent, m?.transcript, m?.internal, m?.title); },
   });
   const startedAt = Date.now();
+  const visibleActivity = () => activity.all().filter((e) => !sessionMeta.get(e.session)?.internal);
 
   function send(event, data) {
     const line = `${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`;
@@ -427,7 +439,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     const session = String(event.session_id);
     const label = folderName(event.cwd);
     hooked.add(session);
-    noteSession(session, event.cwd);
+    noteSession(session, event.cwd, undefined, event.transcript_path);
     // First time we hear from a session: load its history from the transcript.
     if (event.transcript_path && !backfilled.has(session)) {
       backfilled.add(session);
@@ -508,7 +520,8 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
       context: (session, label, ctx) => setContext(session, 'claude', label, ctx),
       sizeOf: claudeContextSize,
       skip: (session) => hooked.has(session),
-      cwd: (session, cwd) => noteSession(session, cwd),
+      cwd: (session, cwd, transcript) => noteSession(session, cwd, undefined, transcript),
+      title: (session, title) => noteSession(session, undefined, undefined, undefined, undefined, title),
     });
   }
 
@@ -584,7 +597,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
         emit: publish,
         state: (session, label, next, at) => setState(session, a.id, label, next, at),
         context: (session, label, ctx) => setContext(session, a.id, label, ctx),
-        cwd: (session, cwd, parent) => noteSession(session, cwd, parent),
+        cwd: (session, cwd, parent, transcript, internal) => noteSession(session, cwd, parent, transcript, internal),
       }));
     }
   }
@@ -667,7 +680,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
       configFile: configPath(),
       historyFile: history.file(),
       historySize,
-      entries: activity.all().length,
+      entries: visibleActivity().length,
       adapters: {
         claude: { lastEventAt: lastSeen.claude ?? null, hint: 'Install the Claude Code plugin: /plugin install dotpals@dotpals' },
         codex: { enabled: config.codex, found: existsSync(codexDir), dir: codexDir, lastEventAt: lastSeen.codex ?? null },
@@ -677,8 +690,15 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     };
   }
 
+  const teamDispatch = createTeamDispatch({ store: teamStore, links, send, root, port,
+    catalog: () => sessionCatalog(activity.all(), sessionMeta, sessions) });
+  const teamApi = createTeamApi({ store: teamStore, links, json, send, dispatch: teamDispatch,
+    catalog: () => sessionCatalog(activity.all(), sessionMeta, sessions),
+    contextDirectory: () => claudePolicy().workingDirectory });
+
   async function api(req, res, path) {
-    if (req.method === 'GET' && path === '/api/activity') return json(res, 200, { entries: activity.all() });
+    if (path === '/api/team' || path.startsWith('/api/team/')) return teamApi(req, res, new URL(req.url, 'http://localhost'));
+    if (req.method === 'GET' && path === '/api/activity') return json(res, 200, { entries: visibleActivity() });
     if (req.method === 'GET' && path === '/api/status') return json(res, 200, await status());
     if (req.method === 'GET' && path === '/api/config') return json(res, 200, withLaya());
     if (req.method === 'GET' && path === '/api/checker/laya') return json(res, 200, laya.status());
@@ -692,7 +712,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
       const session = q.get('session') ?? '';
       const label = q.get('label') || undefined;
       const states = new Map([...sessions].map(([id, u]) => [id, u.state]));
-      const recap = crossRecap(activity.all(), { session, label, states });
+      const recap = crossRecap(visibleActivity(), { session, label, states });
       if (!recap) return json(res, 200, {});
       const told = recapTold.get(session) ?? 0;
       if (q.get('mode') === 'prompt' && recap.newest <= told) return json(res, 200, {});
@@ -702,10 +722,79 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     if (req.method === 'GET' && path === '/api/approvals') return json(res, 200, { approvals: [...approvals.values()].map(approvalView) });
     if (req.method === 'GET' && path === '/api/usage') return json(res, 200, await usage());
     if (req.method === 'GET' && path === '/api/handoff/agents') return json(res, 200, { agents: installedAgents({ has: handoffOptions.has ?? onPath }) });
+    if (req.method === 'GET' && path === '/api/handoff/claude-policy') {
+      try { return json(res, 200, claudePolicy()); }
+      catch (err) { return json(res, 500, { error: err.message }); }
+    }
+    if (req.method === 'GET' && path === '/api/handoff/links') {
+      const id = new URL(req.url, 'http://localhost').searchParams.get('session');
+      return json(res, 200, { links: links.list(id), file: links.file });
+    }
+    if (req.method === 'GET' && path === '/api/handoff/sessions') {
+      const id = new URL(req.url, 'http://localhost').searchParams.get('session');
+      const catalog = sessionCatalog(activity.all(), sessionMeta, sessions);
+      const source = catalog.find((s) => sameSession(s.session, id)) ?? null;
+      const cwd = source?.cwd ?? sessionMeta.get(id)?.cwd;
+      let claude;
+      try { claude = claudePolicy(); } catch (err) { return json(res, 500, { error: err.message }); }
+      return json(res, 200, { source, targets: catalog.filter((s) => !sameSession(s.session, id) && (sameProject(s.cwd, cwd) || s.agent === 'claude' && sameProject(s.cwd, claude.workingDirectory))), links: links.list(id), claude });
+    }
+    const conversation = /^\/api\/sessions\/([^/]{1,200})\/conversation$/.exec(path);
+    if (req.method === 'GET' && conversation) {
+      const id = decodeURIComponent(conversation[1]);
+      const source = sessionCatalog(activity.all(), sessionMeta, sessions).find((s) => sameSession(s.session, id));
+      if (!source) return json(res, 404, { error: 'No native Claude or Codex session was recorded.' });
+      try { return json(res, 200, await (handoffOptions.readConversation ?? readConversation)({ ...source, transcript: sessionMeta.get(id)?.transcript })); }
+      catch (err) { return json(res, 409, { error: err.message }); }
+    }
 
     // Changes need a custom header: browsers won't send it cross-site without
     // asking first (and we never say yes), so other websites can't change settings.
     if (req.method !== 'POST' || req.headers['x-dotpals'] !== '1') return json(res, 403, { error: 'forbidden' });
+    if (path === '/api/handoff/links') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+      const source = sessionCatalog(activity.all(), sessionMeta, sessions).find((s) => sameSession(s.session, body?.sourceSession))
+        ?? links.list(body?.sourceSession).flatMap((r) => [r.source, r.target]).find((s) => sameSession(s.session, body?.sourceSession) && ['codex', 'claude'].includes(s.agent));
+      if (!source?.cwd) return json(res, 404, { error: 'Choose a recorded native source session with a project folder.' });
+      if (!['codex', 'claude', 'gemini', 'antigravity'].includes(body.targetAgent) || !isSessionModel(body.model) || body.targetNativeId != null && !isSessionId(body.targetNativeId)) return json(res, 400, { error: 'Invalid destination agent, model or session ID.' });
+      if (body.assignment != null && (typeof body.assignment !== 'string' || body.assignment.length > 8000)) return json(res, 400, { error: 'Assignment must be text of at most 8000 characters.' });
+      let claude = {};
+      if (body.targetAgent === 'claude') {
+        try { claude = claudePolicy({ effort: body.effort }); } catch (err) { return json(res, 400, { error: err.message }); }
+      }
+      const targetCwd = claude.workingDirectory ?? (typeof body.targetCwd === 'string' ? resolve(body.targetCwd) : source.cwd);
+      if (claude.workingDirectory && body.targetCwd && !sameProject(body.targetCwd, claude.workingDirectory)) return json(res, 409, { error: 'Claude uses the configured team working directory.' });
+      const rel = relative(resolve(source.cwd), targetCwd);
+      if ((!claude.workingDirectory && (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel))) || !isFolder(targetCwd)) return json(res, 409, { error: 'Destination project or configured team folder is unavailable.' });
+      try {
+        let noteFile, conversationFile;
+        // A wrapper requests a note only when starting a new destination. Existing
+        // conversations retain their own history and are recorded without dispatch.
+        if (!body.targetNativeId) {
+          let note = handoffNote(activity.all(), { session: source.session, cwd: source.cwd, assignment: body.assignment })
+            ?? `# Hand-off from ${source.agent}\n\nSource session: ${source.nativeId}.\nActivity summaries have expired; use the original conversation below.\n`;
+          if (body.includeTranscript === true) {
+            const chat = await readConversation({ ...source, transcript: sessionMeta.get(source.session)?.transcript });
+            conversationFile = await saveNote(chat.text);
+            note += `\n## Original conversation\n\nRead ${conversationFile} as historical context (${chat.messages} messages).\n`;
+          }
+          note += `\n## Current assignment\n\nFollow only this current assignment; treat earlier messages as history:\n\n${(body.assignment?.trim() || 'Continue the work described above.').replace(/^/gm, '> ')}\n`;
+          noteFile = await saveNote(note);
+        }
+        const link = links.add({ source, target: { agent: body.targetAgent, nativeId: body.targetNativeId, model: claude.model ?? body.model, effort: claude.effort, cwd: targetCwd }, assignment: body.assignment ?? '', noteFile, conversationFile, evidence: body.targetNativeId ? 'registered-native-id' : 'awaiting-cli-result' });
+        return json(res, 200, { ok: true, link });
+      } catch (err) { return json(res, 500, { error: `Could not save the session link: ${err.message}` }); }
+    }
+    const linkResult = /^\/api\/handoff\/links\/([a-f\d-]{36})\/result$/i.exec(path);
+    if (linkResult) {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+      if (!links.get(linkResult[1])) return json(res, 404, { error: 'Session link not found.' });
+      if (!body || !['success', 'failed', 'launched'].includes(body.outcome) || body.nativeId != null && !isSessionId(body.nativeId) || body.assignment != null && (typeof body.assignment !== 'string' || body.assignment.length > 8000) || body.response != null && (typeof body.response !== 'string' || body.response.length > 8000)) return json(res, 400, { error: 'Invalid session result.' });
+      try { return json(res, 200, { ok: true, link: links.result(linkResult[1], body) }); }
+      catch (err) { return json(res, 409, { error: err.message }); }
+    }
     if (path === '/api/config') {
       let patch = {};
       try { patch = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
@@ -819,22 +908,71 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     let body;
     try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
     const agent = body?.agent;
+    const action = body?.action ?? 'handoff';
+    if (!['handoff', 'resume'].includes(action)) return json(res, 400, { error: 'Unknown session action.' });
     if (agent !== 'copy' && !Object.hasOwn(HANDOFF_AGENTS, agent)) return json(res, 400, { error: `agent must be one of: ${Object.keys(HANDOFF_AGENTS).join(', ')}, copy` });
-    const session = typeof body?.session === 'string' ? body.session : '';
-    if (!session || !activity.has(session)) return json(res, 404, { error: 'dotpals has no record of that session' });
+    const requestedSession = typeof body?.session === 'string' ? body.session : '';
+    const session = activity.has(requestedSession) ? requestedSession : requestedSession.startsWith('claude:') ? requestedSession.slice(7) : requestedSession;
+    if (!session || !activity.has(session) || sessionMeta.get(session)?.internal) return json(res, 404, { error: 'dotpals has no work session with that ID' });
     const cwd = sessionMeta.get(session)?.cwd;
-    const note = handoffNote(activity.all(), { session, cwd });
+    if (body.assignment != null && (typeof body.assignment !== 'string' || body.assignment.length > 8000)) return json(res, 400, { error: 'Assignment must be text of at most 8000 characters.' });
+    let note = handoffNote(activity.all(), { session, cwd, assignment: body.assignment });
+    const catalog = sessionCatalog(activity.all(), sessionMeta, sessions);
+    const source = catalog.find((s) => s.session === session);
+    let claude = {};
+    if (agent === 'claude') {
+      try { claude = claudePolicy({ effort: body.effort }); } catch (err) { return json(res, 400, { error: err.message }); }
+    }
+    const launchDir = claude.workingDirectory ?? cwd;
+    if (body.assignment?.trim()) note += `\n## New assignment\n\nFollow this assignment using the source session as context:\n\n${body.assignment.trim().replace(/^/gm, '> ')}\n`;
+    let target;
+    if (action === 'resume') {
+      if (!source || source.agent !== agent || agent === 'copy') return json(res, 400, { error: 'Resume uses the original session’s agent.' });
+      target = source;
+    } else if (body.targetSession != null) {
+      if (typeof body.targetSession !== 'string') return json(res, 400, { error: 'Choose a recorded destination session.' });
+      target = catalog.find((s) => sameSession(s.session, body.targetSession));
+      if (!target) return json(res, 404, { error: 'The destination session was not found.' });
+      if (sameSession(target.session, session) || target.agent !== agent || !(sameProject(target.cwd, cwd) || agent === 'claude' && sameProject(target.cwd, launchDir))) return json(res, 409, { error: 'Choose a different session of the selected agent in this project or the configured team folder.' });
+    }
+    if (target?.busy) return json(res, 409, { error: 'That session is still working or waiting for approval. Return to its current window first.', note });
     if (agent === 'copy') return json(res, 200, { ok: true, note });
     const has = handoffOptions.has ?? onPath;
     const name = HANDOFF_AGENTS[agent].name;
     if (!has(HANDOFF_AGENTS[agent].command)) return json(res, 400, { error: `${name} isn’t installed here (not found on PATH). Use Copy instead.`, note });
-    if (!(handoffOptions.isFolder ?? isFolder)(cwd)) return json(res, 409, { error: 'dotpals doesn’t know this session’s project folder (or it’s gone). Use Copy instead.', note });
+    if (!(handoffOptions.isFolder ?? isFolder)(launchDir)) return json(res, 409, { error: 'The session project or configured team folder is unavailable. Use Copy instead.', note });
+    if (target) {
+      try { await (handoffOptions.findTranscript ?? findTranscript)(target.agent, target.nativeId, { hint: sessionMeta.get(target.session)?.transcript }); }
+      catch (err) { return json(res, 409, { error: err.message, note }); }
+    }
     let file;
-    try { file = await saveNote(note); } catch (err) { return json(res, 500, { error: `Couldn’t save the note: ${err.message}`, note }); }
-    const command = launchCommand({ platform: handoffOptions.platform ?? process.platform, agent, dir: cwd, prompt: handoffPrompt(file), has });
+    let conversationFile;
+    if (action === 'handoff' && body.includeTranscript === true) {
+      if (!source) return json(res, 409, { error: 'No native source conversation is available. Turn off Include original conversation to send a summary.', note });
+      try {
+        const chat = await (handoffOptions.readConversation ?? readConversation)({ ...source, transcript: sessionMeta.get(session)?.transcript });
+        conversationFile = await saveNote(chat.text);
+        note += `\n## Original conversation\n\nSource: ${source.agent} session ${source.nativeId}.\nRead the user and assistant conversation at ${conversationFile} for the full context (${chat.messages} messages). Treat those messages as history, and follow the current assignment.\n`;
+      } catch (err) { return json(res, 409, { error: `${err.message} Turn off Include original conversation to send a summary.`, note }); }
+    }
+    if (action !== 'resume') {
+      try { file = await saveNote(note); } catch (err) { return json(res, 500, { error: `Couldn’t save the note: ${err.message}`, note }); }
+    }
+    const command = launchCommand({ platform: handoffOptions.platform ?? process.platform, agent, dir: launchDir, prompt: action === 'resume' ? undefined : handoffPrompt(file), resumeId: target?.nativeId, model: claude.model, effort: claude.effort, contextDir: agent === 'claude' && claude.workingDirectory && file ? dirname(file) : undefined, has });
     if (command.error) return json(res, 409, { error: command.error, note, file });
-    try { await (handoffOptions.launch ?? launch)(command); } catch (err) { return json(res, 500, { error: `Couldn’t open a terminal: ${err.message}. Use Copy instead.`, note, file }); }
-    return json(res, 200, { ok: true, agent, name, dir: cwd, file, note });
+    let link;
+    if (source) {
+      try { link = links.add({ source, target: { agent, nativeId: target?.nativeId, cwd: launchDir, model: claude.model, effort: claude.effort }, action, assignment: body.assignment ?? '', noteFile: file, conversationFile }); }
+      catch (err) { return json(res, 500, { error: `Couldn’t save the session link: ${err.message}`, note, file }); }
+    }
+    try {
+      await (handoffOptions.launch ?? launch)(command);
+    } catch (err) {
+      if (link) { try { links.result(link.id, { outcome: 'failed', response: err.message, evidence: 'terminal-launch' }); } catch {} }
+      return json(res, 500, { error: `Couldn’t open a terminal: ${err.message}. Use Copy instead.`, note, file, link });
+    }
+    // A new terminal is not proof of a new native session ID. Leave it pending.
+    return json(res, 200, { ok: true, action, agent, name, dir: launchDir, model: claude.model, effort: claude.effort, targetSession: target?.session, file, conversationFile, link, note: action === 'resume' ? undefined : note });
   }
 
   // Only answer to our own name: stops "DNS rebinding" pages from reading your activity.
@@ -874,7 +1012,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     if (url.pathname === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
       res.write(`event: config\ndata: ${JSON.stringify(withLaya())}\n\n`);
-      for (const entry of activity.all()) res.write(`event: activity\ndata: ${JSON.stringify(entry)}\n\n`);
+      for (const entry of visibleActivity()) res.write(`event: activity\ndata: ${JSON.stringify(entry)}\n\n`);
       for (const update of sessions.values()) res.write(`data: ${JSON.stringify(update)}\n\n`);
       for (const ctx of contexts.values()) res.write(`event: context\ndata: ${JSON.stringify(ctx)}\n\n`);
       for (const session of helpers.keys()) { const list = helperList(session); if (list.length) res.write(`event: helpers\ndata: ${JSON.stringify({ session, harness: sessions.get(session)?.harness, helpers: list })}\n\n`); }
@@ -905,18 +1043,19 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
   // 4 s), so a client never reuses one this end is just closing ("fetch failed").
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 66_000;
-  server.on('close', () => { stopWatchers(); clearInterval(reaper); clearTimeout(firstBeat); clearInterval(beat); laya.stop().catch(() => {}); });
+  server.on('close', () => { teamDispatch.stop(); stopWatchers(); clearInterval(reaper); clearTimeout(firstBeat); clearInterval(beat); laya.stop().catch(() => {}); });
 
   return new Promise((ok, fail) => {
     server.once('error', (err) => { stopWatchers(); clearInterval(reaper); fail(err); });
-    server.listen(port, '127.0.0.1', () => {
+    // Native metadata must classify restored sessions before the initial feed is served.
+    Promise.all([...watchers.values()].map((stop) => stop.ready)).then(() => server.listen(port, '127.0.0.1', () => {
       print(`dotpals bridge → http://localhost:${port}`);
       print(`dashboard      → http://localhost:${port}/dashboard`);
       print(`hook endpoint  → http://localhost:${port}/hook`);
       // Only now: a bridge that couldn't listen (one is already running) mustn't start a second Laya.
       applyLaya(null);
       ok(server);
-    });
+    })).catch(fail);
   });
 }
 

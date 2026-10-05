@@ -138,9 +138,10 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
       file.session = `codex:${p.id ?? p.session_id}`;
       file.cwd = p.cwd;
       file.label = folderName(p.cwd);
+      file.internal = p.source?.subagent?.other === 'guardian';
       // A helper Codex started (spawn_agent) logs its parent; it counts as that session's.
       const parent = p.source?.subagent?.thread_spawn?.parent_thread_id;
-      noteCwd(file.session, p.cwd, parent ? `codex:${parent}` : undefined);
+      noteCwd(file.session, p.cwd, parent ? `codex:${parent}` : undefined, file.path, file.internal);
       return;
     }
     if (o.type === 'turn_context' && p.cwd) {
@@ -148,7 +149,7 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
       file.label = folderName(p.cwd);
       return;
     }
-    if (!file.session) return;
+    if (!file.session || file.internal) return;
     const { session, label, cwd } = file;
     const base = { session, label, harness: HARNESS, at };
     const out = [];
@@ -225,7 +226,7 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
   async function poll() {
     for (const { path, size, mtime } of await recentFiles()) {
       let file = files.get(path);
-      if (!file) files.set(path, (file = { offset: 0, partial: '' }));
+      if (!file) files.set(path, (file = { path, offset: 0, partial: '' }));
       if (size <= file.offset) continue;
       const live = Date.now() - mtime < LIVE;
       let handle_;
@@ -245,11 +246,15 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
     }
   }
 
+  let firstPoll;
+  const ready = new Promise((resolve) => { firstPoll = resolve; });
   (async () => {
     while (!stopped) {
-      try { await poll(); } catch {}
+      try { await poll(); } catch {} finally { firstPoll(); }
       await new Promise((r) => setTimeout(r, interval));
     }
   })();
-  return () => { stopped = true; };
+  const stop = () => { stopped = true; };
+  stop.ready = ready;
+  return stop;
 }

@@ -283,7 +283,7 @@ export function contextOf(o, sizeOf = () => null) {
   return { used, size, known: !!told || used > 200_000, at: Date.parse(o.timestamp) || Date.now() };
 }
 
-export function watchClaude(log, { emit, state, context = () => {}, cwd = () => {}, sizeOf, skip = () => false, dir = join(homedir(), '.claude', 'projects'), interval = 1500 } = {}) {
+export function watchClaude(log, { emit, state, context = () => {}, cwd = () => {}, title = () => {}, sizeOf, skip = () => false, dir = join(homedir(), '.claude', 'projects'), interval = 1500 } = {}) {
   const files = new Map(); // path → { offset, partial, reader, context }
   let stopped = false;
 
@@ -323,6 +323,13 @@ export function watchClaude(log, { emit, state, context = () => {}, cwd = () => 
           file.offset += bytesRead;
           const lines = (file.partial + buffer.subarray(0, bytesRead).toString('utf8')).split('\n');
           file.partial = lines.pop();
+          for (const line of lines) {
+            if (!line.includes('custom-title')) continue;
+            try {
+              const record = JSON.parse(line);
+              if (record.type === 'custom-title' && record.sessionId === session && typeof record.customTitle === 'string' && record.customTitle.trim()) title(session, record.customTitle.trim());
+            } catch {}
+          }
           // Context window (for every session, hooks or not): the newest reply's usage.
           for (let i = lines.length - 1; i >= 0; i--) {
             if (!lines[i].includes('"usage"')) continue;
@@ -335,8 +342,8 @@ export function watchClaude(log, { emit, state, context = () => {}, cwd = () => 
             break;
           }
           if (skip(session)) continue; // the hooks have it
-          if (file.reader.cwd) cwd(session, file.reader.cwd);
           const out = lines.flatMap((line) => (line.trim() ? file.reader.line(line) : []));
+          if (file.reader.cwd) cwd(session, file.reader.cwd, path);
           if (out.length) emit(out);
           if (live && file.reader.state) state(session, file.reader.label, file.reader.state, file.reader.at);
         } catch {} finally {

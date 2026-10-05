@@ -23,6 +23,8 @@ const SHORTCUT = 'CommandOrControl+Alt+P';
 const icon = nativeImage.createFromPath(fileURLToPath(new URL('./icon.png', import.meta.url)));
 
 app.setName('dotpals');
+// A development center can have its own window state and single-instance lock.
+if (process.env.DOTPALS_USER_DATA) app.setPath('userData', process.env.DOTPALS_USER_DATA);
 // Linux needs this for a see-through window (Windows and macOS don't).
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
 app.setAppUserModelId?.('dev.dotpals.desktop'); // Windows shows notifications only for apps with an id
@@ -107,7 +109,7 @@ if (!app.requestSingleInstanceLock()) {
     dashboard.webContents.on('will-navigate', (e, url) => {
       if (!url.startsWith(bridge)) { e.preventDefault(); if (/^(https?|vscode|cursor):/i.test(url)) shell.openExternal(url); }
     });
-    dashboard.loadURL(`${bridge}/dashboard`);
+    dashboard.loadURL(`${bridge}/dashboard${process.argv.includes('--tasks') ? '#tasks' : ''}`);
   }
   ipcMain.on('dashboard:open', openDashboard);
 

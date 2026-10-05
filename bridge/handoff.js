@@ -15,6 +15,7 @@ import { existsSync, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { home } from './config.js';
+import { CLAUDE_EFFORTS } from './claude-policy.js';
 
 /** The agents a session can be handed to: the command, and how it takes a first prompt. */
 export const HANDOFF_AGENTS = {
@@ -68,18 +69,31 @@ const as = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
  *   Linux    gnome-terminal, konsole or x-terminal-emulator, with the agent and prompt as
  *            separate arguments; none found: an error (use Copy instead).
  */
-export function launchCommand({ platform = process.platform, agent, dir, prompt, has = onPath }) {
+export function launchCommand({ platform = process.platform, agent, dir, prompt, resumeId, model, effort, contextDir, has = onPath }) {
   const a = Object.hasOwn(HANDOFF_AGENTS, agent) ? HANDOFF_AGENTS[agent] : null;
   if (!a) return { error: 'That agent can’t be started from dotpals.' };
   if (!dir) return { error: 'dotpals doesn’t know this session’s project folder.' };
-  const words = [a.command, ...a.args(prompt)];
+  if (resumeId != null && (!['codex', 'claude'].includes(agent) || !/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(resumeId))) {
+    return { error: 'This agent needs a valid native session ID to resume.' };
+  }
+  const args = resumeId
+    ? [...(agent === 'codex' ? ['resume', resumeId] : ['--resume', resumeId]), ...(prompt ? [prompt] : [])]
+    : a.args(prompt);
+  if (agent === 'claude') {
+    if (model != null && (typeof model !== 'string' || !/^[a-z\d._:-]{1,100}$/i.test(model))) return { error: 'Invalid Claude model.' };
+    if (effort != null && !CLAUDE_EFFORTS.includes(effort)) return { error: 'Invalid Claude effort.' };
+    if (model) args.push('--model', model);
+    if (effort) args.push('--effort', effort);
+    if (contextDir) args.push('--add-dir', contextDir);
+  }
+  const words = [a.command, ...args];
   if (platform === 'win32') {
     const folder = tidyDir(dir);
-    if ([folder, prompt].some((s) => /["%\r\n]/.test(s))) return { error: 'The folder or note path has characters a Windows terminal can’t take safely.' };
+    if ([folder, ...words].some((s) => /["%\r\n]/.test(s))) return { error: 'The folder or note path has characters a Windows terminal can’t take safely.' };
     const q = (s) => `"${s}"`;
-    const run = ['cmd', '/k', a.command, ...a.args(prompt).map((w) => (w.startsWith('-') && !/\s/.test(w) ? w : q(w)))];
+    const run = ['cmd', '/k', a.command, ...args.map((w) => (w.startsWith('-') && !/\s/.test(w) ? w : q(w)))];
     // Windows Terminal splits its command line at ";", even inside quotes.
-    if (has('wt') && ![folder, prompt].some((s) => s.includes(';'))) {
+    if (has('wt') && ![folder, ...words].some((s) => s.includes(';'))) {
       return { file: 'wt.exe', args: ['-d', q(folder), ...run], options: { windowsVerbatimArguments: true } };
     }
     return { file: 'cmd.exe', args: ['/d', '/c', 'start', '""', '/D', q(folder), ...run], options: { windowsVerbatimArguments: true } };
