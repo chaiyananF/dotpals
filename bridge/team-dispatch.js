@@ -16,6 +16,16 @@ const clean = (value, name, max = 8000) => {
   return value.trim();
 };
 const alive = (pid) => { if (!Number.isInteger(pid)) return false; try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+export function validateAgyEffort(model, effort) {
+  const variant = /^gemini-.*-(low|medium|high)$/i.exec(model)?.[1]?.toLowerCase();
+  if (variant && effort && variant !== effort) throw new TeamError(`AGY model ${model} requires effort=${variant}, or leave effort blank.`);
+}
+export function agyOutcome(code, result) {
+  const response = typeof result?.response === 'string' ? result.response : '';
+  const denied = Array.isArray(result?.denied_actions) ? result.denied_actions : [];
+  const error = denied.length ? `AGY could not complete the task: tool permission denied (${denied.map((item) => item.action || item.display_name || 'tool').join(', ')}). No approval bypass was attempted.` : !response.trim() ? 'AGY returned no final result. Inspect its diagnostics before treating this task as completed.' : result?.error || '';
+  return { response, successful: code === 0 && result?.status === 'SUCCESS' && !denied.length && !!response.trim(), error };
+}
 function executable(provider) {
   const options = {
     claude: [process.env.DOTPALS_CLAUDE, join(homedir(), '.local', 'bin', 'claude.exe')],
@@ -57,6 +67,9 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
     const key = clean(input.idempotencyKey, 'idempotencyKey', 160);
     if (input.allowCodeWrites != null && typeof input.allowCodeWrites !== 'boolean') throw new TeamError('allowCodeWrites must be boolean.');
     const allowCodeWrites = input.allowCodeWrites === true;
+    const allowedCommands = input.allowedCommands ?? [];
+    if (!Array.isArray(allowedCommands) || allowedCommands.length > 8 || allowedCommands.some((command) => typeof command !== 'string' || !command.trim() || command.length > 2000 || /[\r\n\0*?()]/.test(command))) throw new TeamError('allowedCommands must contain up to eight exact commands, without wildcards or multiline rules.');
+    if (allowedCommands.length && (provider !== 'claude' || !allowCodeWrites)) throw new TeamError('Exact command grants require an authorized Claude code-write assignment.');
     if (input.title != null && (typeof input.title !== 'string' || input.title.length > 160)) throw new TeamError('Title must be text of at most 160 characters.');
     if (input.branch != null && (typeof input.branch !== 'string' || input.branch.length > 240)) throw new TeamError('Branch must be text of at most 240 characters.');
     if (input.codeDir != null && typeof input.codeDir !== 'string') throw new TeamError('codeDir must be a folder path.');
@@ -97,9 +110,10 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
     const effort = input.effort || (role === 'raphael' ? 'high' : provider === 'claude' ? policy.effort : '');
     if (provider === 'codex' && effort && !['low', 'medium', 'high', 'xhigh'].includes(effort)) throw new TeamError('Unsupported Codex reasoning effort.');
     if (provider === 'antigravity' && effort && !['low', 'medium', 'high', 'max'].includes(effort)) throw new TeamError('Unsupported AGY effort.');
-    const plan = { taskId: task?.id ?? null, from, participantId: recipient?.id ?? null, parentRunId: parent?.id ?? null, provider, nativeId, role, prompt, cwd, codeDir, model, effort, allowCodeWrites, idempotencyKey: key,
+    if (provider === 'antigravity') validateAgyEffort(model, effort);
+    const plan = { taskId: task?.id ?? null, from, participantId: recipient?.id ?? null, parentRunId: parent?.id ?? null, provider, nativeId, role, prompt, cwd, codeDir, model, effort, allowCodeWrites, allowedCommands, idempotencyKey: key,
       task: { title: input.title?.trim() || prompt.split('\n')[0].slice(0, 140), goal: prompt, scope: allowCodeWrites ? 'Code work within the selected checkout and current instruction.' : 'Read-only analysis and coordination.', acceptance: 'Return a result with evidence, blockers and the next action.', contextDir: cwd, codeDir, branch: input.branch || task?.branch || '', contractVersion: 'app-dispatch-v1' } };
-    plan.fingerprint = JSON.stringify({ taskId: input.taskId ?? null, from, participantId: input.participantId ?? null, parentRunId: input.parentRunId ?? null, provider, prompt, session: input.session ?? null, role: input.role ?? null, model: input.model ?? '', effort: input.effort ?? '', allowCodeWrites, codeDir: input.codeDir ?? '', title: input.title ?? '', branch: input.branch ?? '' });
+    plan.fingerprint = JSON.stringify({ taskId: input.taskId ?? null, from, participantId: input.participantId ?? null, parentRunId: input.parentRunId ?? null, provider, prompt, session: input.session ?? null, role: input.role ?? null, model: input.model ?? '', effort: input.effort ?? '', allowCodeWrites, codeDir: input.codeDir ?? '', title: input.title ?? '', branch: input.branch ?? '', ...(allowedCommands.length ? { allowedCommands } : {}) });
     const previous = store.dispatches().find((job) => job.idempotencyKey === key && job.from === from);
     if (previous) {
       if (previous.fingerprint !== plan.fingerprint) throw new TeamError('Dispatch key already has different content.', 409);
@@ -141,7 +155,7 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       const mcpConfig = join(directory, 'mcp.json');
       writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { dotpals: mcp } }, null, 2), { mode: 0o600 });
       const args = [];
-      if (job.provider === 'claude') args.push(...(job.nativeId ? ['--resume', job.nativeId] : []), ...(job.model ? ['--model', job.model] : []), ...(job.effort ? ['--effort', job.effort] : []), ...(!job.allowCodeWrites ? ['--permission-mode', 'plan'] : []), '--mcp-config', mcpConfig, '--allowedTools', 'mcp__dotpals__*', '--add-dir', job.codeDir, directory, '--output-format', 'json', '--print');
+      if (job.provider === 'claude') args.push(...(job.nativeId ? ['--resume', job.nativeId] : []), ...(job.model ? ['--model', job.model] : []), ...(job.effort ? ['--effort', job.effort] : []), ...(!job.allowCodeWrites ? ['--permission-mode', 'plan'] : []), '--mcp-config', mcpConfig, '--allowedTools', 'mcp__dotpals__*', ...(job.allowedCommands ?? []).map((command) => `Bash(${command})`), '--add-dir', job.codeDir, directory, '--output-format', 'json', '--print');
       if (job.provider === 'antigravity') args.push(...(job.nativeId ? ['--conversation', job.nativeId] : []), '--model', job.model, ...(job.effort ? ['--effort', job.effort] : []), ...(!job.allowCodeWrites ? ['--mode', 'plan'] : []), '--add-dir', job.codeDir, '--add-dir', directory, '--output-format', 'json', '--print-timeout', '30m', '--print', `Read ${join(directory, 'brief.md')} and perform only its current assignment. Your run artifacts directory is ${directory}.`);
       if (job.provider === 'codex') {
         args.push('exec', '-s', job.allowCodeWrites ? 'workspace-write' : 'read-only', '-C', job.codeDir, ...(job.effort ? ['-c', `model_reasoning_effort="${job.effort}"`] : []), ...(job.model ? ['-m', job.model] : []));
@@ -176,6 +190,7 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       try { const whole = JSON.parse(output); if (whole && typeof whole === 'object' && !Array.isArray(whole)) records.push(whole); } catch {}
       let response = '';
       let successful = false;
+      let providerError = '';
       if (job.provider === 'claude') {
         const result = records.findLast((row) => row.session_id);
         observedId = result?.session_id ?? null;
@@ -184,8 +199,7 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       } else if (job.provider === 'antigravity') {
         const result = records.findLast((row) => row.conversation_id);
         observedId = result?.conversation_id ?? null;
-        response = String(result?.response ?? '');
-        successful = code === 0 && result?.status === 'SUCCESS';
+        ({ response, successful, error: providerError } = agyOutcome(code, result));
       } else {
         observedId = records.find((row) => row.type === 'thread.started')?.thread_id ?? null;
         try { response = readFileSync(responseFile, 'utf8'); } catch {}
@@ -196,7 +210,7 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       if (!observedId || !isSessionId(observedId)) successful = false;
       if (cancelled) successful = false;
       if (response) writeFileSync(responseFile, response, { mode: 0o600 });
-      const error = successful ? '' : cancelled ? 'Stopped by the user. Inspect the checkout before continuing.' : (!observedId ? `CLI did not return a confirmed session ID (exit ${code}). ${errors.trim().slice(-2000)}` : response || errors.trim().slice(-4000) || `CLI failed (exit ${code}).`);
+      const error = successful ? '' : cancelled ? 'Stopped by the user. Inspect the checkout before continuing.' : (!observedId ? `CLI did not return a confirmed session ID (exit ${code}). ${errors.trim().slice(-2000)}` : providerError || response || errors.trim().slice(-4000) || `CLI failed (exit ${code}).`);
       status(job.id, { status: cancelled ? 'cancelled' : successful ? 'succeeded' : 'failed', response: response.slice(0, 64000), error: error.slice(0, 8000), finishedAt: new Date().toISOString() });
       if (successful) store.read(job.taskId, job.assignmentId, { recipientId: job.participantId });
       store.send(job.taskId, { from: job.participantId, to: job.from, type: successful ? 'result' : 'blocker', body: (successful ? response || 'CLI completed with no final text.' : error).slice(0, 64000), idempotencyKey: `dispatch-result:${job.id}` });

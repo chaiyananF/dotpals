@@ -94,6 +94,17 @@ confirmed `participantId`; the broker resumes only that native ID. Use `options`
 for provider settings. Claude workers default to the existing Sonnet policy, AGY
 needs an account-visible model, and Codex workers can use their CLI configuration.
 Do not copy an app-only model ID to a CLI or silently switch models after rejection.
+Gemini model variants ending in `low`, `medium` or `high` must agree with an explicit
+effort, or leave effort blank. AGY's soft-denied tools and empty final responses
+are incomplete runs even if the native CLI reports SUCCESS/exit zero.
+
+For an explicitly authorized Claude code assignment, `allowedCommands` may provide
+up to eight exact Bash commands for that invocation only, with a maximum of 2000
+characters per command. The characters `*`, `?`, `(`, `)` and CR, LF or NUL are
+rejected. Use this only for commands already covered by the human task (for
+example, a guarded scaffolding script), within the approved write scope. No global
+provider permissions are changed and there is no all-tools approval bypass. It is
+not a substitute for user authorization.
 
 Summary payload:
 
