@@ -50,7 +50,7 @@ try {
     else if (values.has(name) && args.length && !args[0].startsWith('--')) options[name] = args.shift();
     else throw new Error(`Unknown option or missing value: ${argument}`);
   }
-  const port = Number(options.port ?? process.env.DOTPALS_PORT ?? 5176);
+  const port = Number(options.port ?? (process.env.DOTPALS_PORT || 5176));
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid local bridge port.');
   if (options.wait && (command !== 'run' || !Number.isFinite(Number(options.wait)) || Number(options.wait) < 0 || Number(options.wait) > 30)) throw new Error('--wait is available for run only, between 0 and 30 seconds.');
   const need = (name) => { if (!options[name]) throw new Error(`--${name} is required.`); return encodeURIComponent(options[name]); };
