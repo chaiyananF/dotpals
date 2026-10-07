@@ -106,6 +106,10 @@ example, a guarded scaffolding script), within the approved write scope. No glob
 provider permissions are changed and there is no all-tools approval bypass. It is
 not a substitute for user authorization.
 
+The same field is accepted by CLI `delegate`, the HTTP dispatch endpoint and the
+coordinator's MCP `dispatch` tool, with identical validation. Worker MCP sessions
+do not have a `dispatch` tool.
+
 Summary payload:
 
 ```json

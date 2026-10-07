@@ -17,7 +17,7 @@ const tools = [
   tool('runs', 'List dispatch progress for this task. Read one run for its complete response.', schema()),
   tool('run', 'Read one task run; optionally wait up to 30 seconds for its terminal result before reading again.', schema({ runId: str, waitSeconds: { type: 'integer', minimum: 0, maximum: 30 } }, ['runId'])),
   tool('options', 'Read installed providers, models and the configured team folder.', schema()),
-  ...(coordinator ? [tool('dispatch', 'Delegate one scoped assignment through Dotpals. Returns a queued run; inspect it with run. Workers cannot redelegate.', schema({ agent: { enum: ['claude', 'codex', 'antigravity'] }, role: { enum: ['petros', 'nathaniel', 'thomas', 'matthew', 'philip', 'andrew'] }, prompt: { type: 'string', maxLength: 8000 }, participantId: str, model: str, effort: str, codeDir: str, allowCodeWrites: { type: 'boolean' }, idempotencyKey: str }, ['agent', 'prompt']), false)] : []),
+  ...(coordinator ? [tool('dispatch', 'Delegate one scoped assignment through Dotpals. Returns a queued run; inspect it with run. Workers cannot redelegate.', schema({ agent: { enum: ['claude', 'codex', 'antigravity'] }, role: { enum: ['petros', 'nathaniel', 'thomas', 'matthew', 'philip', 'andrew'] }, prompt: { type: 'string', maxLength: 8000 }, participantId: str, model: str, effort: str, codeDir: str, allowCodeWrites: { type: 'boolean' }, allowedCommands: { type: 'array', items: str, maxItems: 8 }, idempotencyKey: str }, ['agent', 'prompt']), false)] : []),
 ];
 async function api(path, body) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(15000), ...(body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-dotpals': '1' }, body: JSON.stringify(body) } : {}) });
@@ -46,7 +46,7 @@ async function call(name, args = {}) {
   }
   if (name === 'dispatch') {
     // Explicit allow-list: callers cannot replace bound task/from/parent identities.
-    const payload = Object.fromEntries(['agent', 'role', 'prompt', 'participantId', 'model', 'effort', 'codeDir', 'allowCodeWrites', 'idempotencyKey'].filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
+    const payload = Object.fromEntries(['agent', 'role', 'prompt', 'participantId', 'model', 'effort', 'codeDir', 'allowCodeWrites', 'allowedCommands', 'idempotencyKey'].filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
     return api('/api/team/dispatch', { ...payload, taskId, from: participantId, parentRunId, idempotencyKey: payload.idempotencyKey ?? randomUUID() });
   }
 }
