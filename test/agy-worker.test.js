@@ -43,3 +43,6 @@ test('AGY channel forbids shell and the Dotpals CLI and allows edits only for wr
   assert.doesNotMatch(agyChannel(false), /file edits/);
   assert.match(agyChannel(true), /file edits inside the code checkout/);
 });
+test('AGY channel forbids web search for every run', () => {
+  for (const writes of [false, true]) assert.match(agyChannel(writes), /Do not search the web or fetch URLs/);
+});

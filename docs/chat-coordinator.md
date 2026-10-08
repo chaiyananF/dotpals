@@ -98,8 +98,8 @@ Gemini model variants ending in `low`, `medium` or `high` must agree with an exp
 effort, or leave effort blank. AGY's soft-denied tools and empty final responses
 are incomplete runs even if the native CLI reports SUCCESS/exit zero. Headless AGY
 cannot ask for a permission, so its runs get no shell and no Dotpals tools: read-only
-runs use plan mode, code writers use accept-edits, the brief forbids commands and
-file-based results, and the final text response is the result.
+runs use plan mode, code writers use accept-edits, the brief forbids commands, web
+search and file-based results, and the final text response is the result.
 
 For an explicitly authorized Claude code assignment, `allowedCommands` may provide
 up to eight exact Bash commands for that invocation only, with a maximum of 2000
