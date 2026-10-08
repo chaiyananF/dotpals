@@ -62,6 +62,8 @@ export function createTeamApi({ store, links, catalog, send, json, contextDirect
       if (path === '/api/team/dispatch') return json(res, 202, { run: dispatch.submit(body) });
       const cancel = /^\/api\/team\/dispatch\/([a-f\d-]{36})\/cancel$/i.exec(path);
       if (cancel) return json(res, 200, { run: dispatch.cancel(cancel[1]) });
+      const release = /^\/api\/team\/dispatch\/([a-f\d-]{36})\/release$/i.exec(path);
+      if (release) return json(res, 200, { run: dispatch.release(release[1]) });
       if (path === '/api/team/tasks') {
         const task = store.create(body);
         send('team-task', { taskId: task.id });

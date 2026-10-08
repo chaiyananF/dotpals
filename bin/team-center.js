@@ -28,6 +28,9 @@ Write (JSON payload from a file or explicitly from stdin):
   node bin/team-center.js delegate [--task TASK_UUID] [--session provider:UUID] --file worker.json
   node bin/team-center.js summary [--task TASK_UUID] [--session provider:UUID] --file summary.json
 
+Release an interrupted run after its CLI has stopped (no payload):
+  node bin/team-center.js release --run RUN_UUID
+
 Use --stdin instead of --file to read JSON from stdin.
 Default port: 5176. Override with --port PORT or DOTPALS_PORT.
 Payload schemas and limitations: docs/task-mailbox.md
@@ -76,15 +79,16 @@ try {
   else if (command === 'context') path = `/api/team/coordinator?session=${encodeURIComponent(currentSession())}`;
   else if (command === 'show') path = `/api/team/tasks/${need('task')}`;
   else if (command === 'inbox') path = `/api/team/inbox?${options.user ? 'recipient=user' : `session=${need('session')}`}&unread=${options.all ? '0' : '1'}`;
+  else if (command === 'release') { write = true; path = `/api/team/dispatch/${need('run')}/release`; }
   else if (['create', 'join', 'update', 'bind', 'send', 'read', 'dispatch', 'coordinate', 'delegate', 'summary'].includes(command)) {
     write = true;
     const action = { join: 'participants', update: 'update', bind: 'links', send: 'messages' };
     path = ['dispatch', 'delegate'].includes(command) ? '/api/team/dispatch' : command === 'coordinate' ? '/api/team/coordinator/attach' : command === 'summary' ? '/api/team/coordinator/summary' : command === 'create' ? '/api/team/tasks' : `/api/team/tasks/${need('task')}/${command === 'read' ? `messages/${need('message')}/read` : action[command]}`;
   } else throw new Error(`Unknown command: ${command}`);
   if (options.file && options.stdin) throw new Error('Choose --file or --stdin.');
-  if (!write && (options.file || options.stdin)) throw new Error('Read commands do not accept a payload.');
-  let payload;
-  if (write) {
+  if ((!write || command === 'release') && (options.file || options.stdin)) throw new Error(`${command === 'release' ? 'release does' : 'Read commands do'} not accept a payload.`);
+  let payload = command === 'release' ? {} : undefined;
+  if (write && command !== 'release') {
     if (!options.file && !options.stdin) throw new Error('Provide a JSON payload with --file or --stdin.');
     const raw = readFileSync(options.stdin ? 0 : options.file, 'utf8').replace(/^\uFEFF/, '');
     if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error('Payload exceeds 1 MB.');

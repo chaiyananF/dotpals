@@ -234,6 +234,16 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       if (!control) throw new TeamError('Only a CLI owned by this bridge can be stopped here. Inspect the original process.', 409);
       control.cancel(); return publicJob(store.dispatch(id));
     },
+    release(id) {
+      const job = store.dispatch(id); if (!job) throw new TeamError('Dispatch not found.', 404);
+      if (job.status !== 'interrupted') throw new TeamError('Only an interrupted run can be released.', 409);
+      // A reused PID also blocks the release; that errs toward never orphaning a live writer.
+      if (alive(job.childPid)) throw new TeamError(`The original CLI (PID ${job.childPid}) is still running. Stop it or wait for it before releasing this run.`, 409);
+      const error = 'Released after the bridge stopped: the original CLI was no longer running. Inspect the checkout and run artifacts before continuing.';
+      const updated = status(id, { status: 'cancelled', error, finishedAt: new Date().toISOString() });
+      store.send(job.taskId, { from: job.participantId, to: job.from, type: 'blocker', body: error, idempotencyKey: `dispatch-result:${job.id}` });
+      return publicJob(updated);
+    },
     stop() { stopped = true; for (const control of children.values()) control.cancel(); },
   };
 }

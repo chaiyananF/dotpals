@@ -135,6 +135,10 @@ one bridge for the profile. Previous queued/running jobs whose owner process sto
 become interrupted when a new bridge starts. They are not auto-retried. Inspect the
 old CLI and checkout before resuming; native tools/child processes may still have
 work in progress. The stop button signals only a CLI owned by this bridge.
+Once the old CLI has stopped, release the run with the run card's release button or
+`node bin/team-center.js release --run RUN_UUID`. Release refuses while the saved CLI
+PID is still alive; otherwise it marks the run cancelled, sends a blocker to the
+coordinator, and frees the native session and task for the next instruction.
 
 Provider output is bounded (8 million stdout characters / limited diagnostics),
 each run times out at 30 minutes, and at most 20 live queue entries are accepted.

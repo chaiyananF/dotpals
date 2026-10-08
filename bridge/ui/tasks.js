@@ -329,6 +329,7 @@ export function mountTasks(host, { api, toast }) {
       if (job.error) row.append(node('p', 'team-error', job.error));
       const actions = node('div', 'team-message-actions');
       if (['queued', 'running'].includes(job.status)) actions.append(button('หยุดการเรียกนี้', (event) => run(async () => { await api(`/api/team/dispatch/${job.id}/cancel`, {}); await refresh(); }, event.currentTarget)));
+      if (job.status === 'interrupted') actions.append(button('ปลด run ที่ค้าง', (event) => run(async () => { await api(`/api/team/dispatch/${job.id}/release`, {}); await refresh(); }, event.currentTarget)));
       if (job.response) actions.append(button('นำผลไปส่งต่อ', () => { quick.prompt.value = `ใช้ผลด้านล่างทำงานต่อ โดยยึดคำสั่งปัจจุบันและกติกาทีม\n\nผลจาก ${job.provider} (บริบท):\n${job.response.slice(0, 5000)}${job.response.length > 5000 ? `\n\nผลเต็มอยู่ที่ ${job.artifactDir}\\response.txt` : ''}`; quick.prompt.focus(); quickSlot.scrollIntoView({ block: 'start' }); }));
       row.append(actions); box.append(row);
     }
