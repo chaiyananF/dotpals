@@ -1076,7 +1076,7 @@
       } else {
         items.push({ key: 'quiet', make: () => { const c = el('div', 'card'); c.append(el('p', 'quiet', 'All quiet. No agent is working right now; this opens by itself when one needs you.')); return c; } });
       }
-      if (kind !== 'approval') items.push(usageItem());
+      if (kind !== 'approval') items.push(usageItem(s?.harness));
       keyed(main, items);
       // Live numbers inside kept nodes.
       for (const n of main.querySelectorAll('[data-until]')) n.textContent = `${Math.max(0, Math.ceil((Number(n.dataset.until) - Date.now()) / 1000))}s`;
@@ -1329,12 +1329,13 @@
       return card;
     }
 
-    /** Everyone's plan limits, compact: "● Claude  5-hour ▓▓░ 42%  Week ▓░░ 18%". */
-    function usageItem() {
-      const rows = usage.filter((u) => u.limits?.length);
-      const hint = usage.find((u) => u.harness === 'claude')?.setup === 'statusline';
+    /** Plan limits, compact: "● Claude  5-hour ▓▓░ 42%  Week ▓░░ 18%". Only the shown agent's, or everyone's when none is. */
+    function usageItem(harness) {
+      const mine = usage.filter((u) => !harness || u.harness === harness);
+      const rows = mine.filter((u) => u.limits?.length);
+      const hint = mine.find((u) => u.harness === 'claude')?.setup === 'statusline';
       if (!rows.length && !hint) return null;
-      const key = `usage|${JSON.stringify(rows.map((u) => [u.harness, u.limits.map((l) => [l.label, Math.round(l.used_percent)])]))}|${hint}`;
+      const key = `usage|${harness ?? 'all'}|${JSON.stringify(rows.map((u) => [u.harness, u.limits.map((l) => [l.label, Math.round(l.used_percent)])]))}|${hint}`;
       return { key, make: () => {
         const box = el('div', 'usage');
         for (const u of rows) {
