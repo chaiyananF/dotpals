@@ -1171,7 +1171,7 @@
       const p = planOf(stepsOf(s));
       const c = contexts.get(s.id);
       if (!p && !c) return null;
-      const key = `meta|${p ? `${p.done}/${p.total}|${p.current?.text}` : ''}|${c ? `${c.used}/${c.size}/${c.known}` : ''}`;
+      const key = `meta|${p ? `${p.done}/${p.total}|${p.current?.text}` : ''}|${c ? `${c.used}/${c.size}/${c.known}/${c.model}/${c.effort}` : ''}`;
       return { key, make: () => {
         const box = el('div', `meta ${harnessClass(s.harness)}`);
         if (p) box.append(meter(`Plan ${p.done}/${p.total}${p.current ? ` · ${p.current.active || p.current.text}` : ''}`, (p.done / p.total) * 100, 'plan'));
@@ -1179,8 +1179,16 @@
           const pct = (c.used / c.size) * 100;
           box.append(c.known ? meter(`Context ${Math.round(pct)}%`, pct, pct >= 90 ? 'hot' : pct >= 75 ? 'warm' : 'ok') : el('span', 'meter-text', `Context ${tokens(c.used)} tokens`));
         }
+        if (c?.model || c?.effort) box.append(effortTag(c));
         return box;
       } };
+    }
+    // Low effort is worth a glance: a worker started too low is the usual reason to step it up.
+    function effortTag({ model, effort }) {
+      const low = ['none', 'minimal', 'low'].includes(effort);
+      const tag = el('span', `meter-text${low ? ' warn' : ''}`, [model, effort && `effort ${effort}`].filter(Boolean).join(' · '));
+      tag.title = low ? `Running at ${effort} effort. Raise it if the work needs more reasoning.` : tag.textContent;
+      return tag;
     }
     const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
 

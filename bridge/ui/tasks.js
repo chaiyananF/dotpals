@@ -323,7 +323,7 @@ export function mountTasks(host, { api, toast }) {
     const states = { queued: 'รอเรียก CLI', running: 'กำลังทำงาน', succeeded: 'CLI ส่งผลกลับแล้ว', failed: 'เรียกไม่สำเร็จ / ติดข้อจำกัด', interrupted: 'การเรียกถูกขัดจังหวะ', cancelled: 'หยุดแล้ว' };
     for (const job of [...runs].reverse()) {
       const row = node('article', 'team-run');
-      row.append(node('strong', '', `${names[job.role]} (${job.provider} · ${job.model || 'ค่าเริ่มต้น CLI'})`), node('span', 'team-state', states[job.status] ?? job.status));
+      row.append(node('strong', '', `${names[job.role]} (${job.provider} · ${job.model || 'ค่าเริ่มต้น CLI'} · effort ${job.effort || 'ค่าเริ่มต้น CLI'})`), node('span', 'team-state', states[job.status] ?? job.status));
       const details = node('details'); details.append(node('summary', '', 'คำสั่งและ session'), node('p', 'team-content', job.prompt), node('p', 'team-id', job.nativeId ? `${job.provider}:${job.nativeId}` : 'ยังไม่มี session ID ที่ยืนยันแล้ว')); row.append(details);
       if (job.response) row.append(node('h3', '', job.role === 'raphael' ? 'สรุปจากราฟาเอล — รอคำสั่งถัดไป' : 'ผลจากผู้รับงาน'), node('p', 'team-content', job.response));
       if (job.error) row.append(node('p', 'team-error', job.error));

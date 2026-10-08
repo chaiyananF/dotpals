@@ -144,9 +144,10 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
       noteCwd(file.session, p.cwd, parent ? `codex:${parent}` : undefined, file.path, file.internal);
       return;
     }
-    if (o.type === 'turn_context' && p.cwd) {
-      file.cwd = p.cwd;
-      file.label = folderName(p.cwd);
+    if (o.type === 'turn_context') {
+      if (p.cwd) { file.cwd = p.cwd; file.label = folderName(p.cwd); }
+      file.model = p.model ?? file.model;
+      file.effort = p.effort ?? file.effort;
       return;
     }
     if (!file.session || file.internal) return;
@@ -174,7 +175,7 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
       case 'event_msg/token_count': {
         const last = p.info?.last_token_usage;
         const size = p.info?.model_context_window;
-        if (last?.input_tokens && size) context(session, label, { used: last.input_tokens, size, known: true, at });
+        if (last?.input_tokens && size) context(session, label, { used: last.input_tokens, size, known: true, at, model: file.model ?? null, effort: file.effort ?? null });
         break;
       }
       case 'event_msg/task_started':

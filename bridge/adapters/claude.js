@@ -280,7 +280,7 @@ export function contextOf(o, sizeOf = () => null) {
   if (!used) return null;
   const told = sizeOf(o.sessionId);
   const size = told ?? (used > 200_000 ? 1_000_000 : 200_000);
-  return { used, size, known: !!told || used > 200_000, at: Date.parse(o.timestamp) || Date.now() };
+  return { used, size, known: !!told || used > 200_000, at: Date.parse(o.timestamp) || Date.now(), model: o.message?.model ?? null, effort: o.effort ?? null };
 }
 
 export function watchClaude(log, { emit, state, context = () => {}, cwd = () => {}, title = () => {}, sizeOf, skip = () => false, dir = join(homedir(), '.claude', 'projects'), interval = 1500 } = {}) {
@@ -338,7 +338,7 @@ export function watchClaude(log, { emit, state, context = () => {}, cwd = () => 
             const ctx = contextOf(o, sizeOf);
             if (!ctx) continue;
             if (o.cwd) file.reader.label ??= folderName(o.cwd);
-            if (ctx.used !== file.context?.used) context(session, file.reader.label ?? folderName(o.cwd), (file.context = ctx));
+            if (ctx.used !== file.context?.used || ctx.effort !== file.context?.effort || ctx.model !== file.context?.model) context(session, file.reader.label ?? folderName(o.cwd), (file.context = ctx));
             break;
           }
           if (skip(session)) continue; // the hooks have it

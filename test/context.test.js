@@ -49,6 +49,7 @@ test('context-window updates are sent, replayed to new viewers, and cleared', as
   const ts = new Date().toISOString();
   const lines = [
     { timestamp: ts, type: 'session_meta', payload: { id: 'ctx-1', cwd: '/work/proj' } },
+    { timestamp: ts, type: 'turn_context', payload: { cwd: '/work/proj', model: 'gpt-6.1-sol', effort: 'low' } },
     { timestamp: ts, type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 64000 }, model_context_window: 256000 } } },
   ];
   await writeFile(join(folder, 'rollout-ctx.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
@@ -69,8 +70,8 @@ test('context-window updates are sent, replayed to new viewers, and cleared', as
   }
   assert.ok(context, 'a new viewer gets the context replayed');
   assert.deepEqual(
-    { session: context.data.session, harness: context.data.harness, label: context.data.label, used: context.data.used, size: context.data.size, known: context.data.known },
-    { session: 'codex:ctx-1', harness: 'codex', label: 'proj', used: 64000, size: 256000, known: true },
+    { session: context.data.session, harness: context.data.harness, label: context.data.label, used: context.data.used, size: context.data.size, known: context.data.known, model: context.data.model, effort: context.data.effort },
+    { session: 'codex:ctx-1', harness: 'codex', label: 'proj', used: 64000, size: 256000, known: true, model: 'gpt-6.1-sol', effort: 'low' },
   );
 
   // Clearing history forgets it.
