@@ -8,12 +8,16 @@
 //
 // Everything is read from files on this computer; nothing is fetched.
 import { readFileSync } from 'node:fs';
-import { open, readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { home } from './config.js';
 
-export const claudeLimitsFile = () => join(home(), 'claude-limits.json');
+// Claude Code runs the status line without a center profile's DOTPALS_HOME, so its file lands in
+// the default home; read both and keep the newest.
+const claudeLimitsFiles = () => [...new Set([home(), join(homedir(), '.dotpals')].map((dir) => join(dir, 'claude-limits.json')))];
+const newestClaudeLimits = () => claudeLimitsFiles().flatMap((file) => { try { return [JSON.parse(readFileSync(file, 'utf8'))]; } catch { return []; } })
+  .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))[0];
 
 /** A limit window, or null: { used_percent, resets_at (ms), window_minutes }. A window that has reset reads 0%. */
 function windowOf(used, resetsAt, minutes) {
@@ -24,8 +28,8 @@ function windowOf(used, resetsAt, minutes) {
 }
 
 async function claude() {
-  let saved;
-  try { saved = JSON.parse(await readFile(claudeLimitsFile(), 'utf8')); } catch { return { harness: 'claude', window: null, weekly: null, setup: 'statusline' }; }
+  const saved = newestClaudeLimits();
+  if (!saved) return { harness: 'claude', window: null, weekly: null, setup: 'statusline' };
   const r = saved.rate_limits ?? {};
   return {
     harness: 'claude',
@@ -85,9 +89,7 @@ async function codex(dir = process.env.DOTPALS_CODEX_DIR || join(homedir(), '.co
 let sizes = { at: 0, map: {} };
 export function claudeContextSize(session) {
   if (Date.now() - sizes.at > 5000) {
-    let map = {};
-    try { map = JSON.parse(readFileSync(claudeLimitsFile(), 'utf8')).sizes ?? {}; } catch {}
-    sizes = { at: Date.now(), map };
+    sizes = { at: Date.now(), map: newestClaudeLimits()?.sizes ?? {} };
   }
   return sizes.map[session] ?? null;
 }

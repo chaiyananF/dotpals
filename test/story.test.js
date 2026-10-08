@@ -80,6 +80,7 @@ test('readUsage finds Codex limits in its logs', async (t) => {
   const { readUsage } = await import('../bridge/usage.js');
   const dir = await mkdtemp(join(tmpdir(), 'dotpals-usage-'));
   process.env.DOTPALS_HOME = join(dir, 'home');
+  process.env.HOME = process.env.USERPROFILE = join(dir, 'user');
   t.after(() => rm(dir, { recursive: true, force: true }));
   const d = new Date();
   const folder = join(dir, 'codex', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
