@@ -110,3 +110,66 @@ test('watchCodex follows a session log', async (t) => {
   assert.equal(metadata.find((m) => m[0] === 'codex:guardian-1')[4], true);
   assert.equal(metadata.find((m) => m[0] === session)[3], join(folder, 'rollout-x.jsonl'));
 });
+
+async function watchFixture(t, daysAgo, lines) {
+  const dir = await mkdtemp(join(tmpdir(), 'dotpals-codex-'));
+  let stop = () => {};
+  t.after(async () => {
+    stop();
+    await sleep(150);
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const day = new Date(Date.now() - daysAgo * 86_400_000);
+  const folder = join(dir, String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
+  await mkdir(folder, { recursive: true });
+  await writeFile(join(folder, 'rollout-long.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+
+  const log = createActivityLog();
+  const states = [];
+  const contexts = [];
+  stop = watchCodex(log, {
+    dir,
+    interval: 50,
+    emit: () => {},
+    state: (session, label, next) => states.push({ session, label, ...next }),
+    context: (session, label, next) => contexts.push(next),
+  });
+  await stop.ready;
+  await sleep(100);
+  stop();
+  return { log, states, contexts };
+}
+
+test('watchCodex follows a resumed session whose log sits in an old date folder', async (t) => {
+  const at = new Date().toISOString();
+  const { log, states } = await watchFixture(t, 5, [
+    { timestamp: at, type: 'session_meta', payload: { id: 'long-1', cwd: '/work/proj' } },
+    { timestamp: at, type: 'event_msg', payload: { type: 'task_started' } },
+    { timestamp: at, type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm test' }), call_id: 'c1' } },
+  ]);
+
+  assert.ok(log.findLast('codex:long-1', (x) => x.kind === 'run'), 'run entry from the old-folder log');
+  assert.equal(states.at(-1).state, 'working');
+  assert.equal(states.at(-1).session, 'codex:long-1');
+});
+
+test('watchCodex reads only the tail of a huge log but still learns the session from its first line', async (t) => {
+  const at = new Date().toISOString();
+  const prompt = (text) => ({ timestamp: at, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+  const filler = Array.from({ length: 20_000 }, (_, i) => prompt(`old prompt ${i}`));
+  const usage = (used) => ({ timestamp: at, type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: used }, model_context_window: 1000 } } });
+  const { log, states, contexts } = await watchFixture(t, 0, [
+    { timestamp: at, type: 'session_meta', payload: { id: 'huge-1', cwd: '/work/proj' } },
+    usage(111),
+    ...filler,
+    usage(999),
+    prompt('latest prompt'),
+    { timestamp: at, type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm test' }), call_id: 'c2' } },
+  ]);
+
+  const titles = log.all().filter((e) => e.session === 'codex:huge-1' && e.kind === 'prompt').map((e) => e.title);
+  assert.ok(titles.includes('latest prompt'), 'tail is read');
+  assert.deepEqual(contexts.map((c) => c.used), [999], 'only the tail is replayed');
+  assert.equal(log.all().find((e) => e.session === 'codex:huge-1').label, 'proj');
+  assert.equal(states.at(-1).state, 'working');
+});

@@ -9,6 +9,12 @@ import { clip, clipEnds, clipText, folderName, relative, toPatch } from '../acti
 const HARNESS = 'codex';
 const RECENT = 12 * 60 * 60 * 1000; // follow logs touched in the last 12 hours
 const LIVE = 10 * 60 * 1000;        // …but only give a pal to sessions active in the last 10 minutes
+// Codex appends to the log in the folder of the day the session STARTED, so a chat resumed for days keeps writing into an old folder.
+const LOOKBACK_DAYS = 14;
+// A first-seen log bigger than this is read from its last TAIL_BYTES only; replaying a multi-day chat (tens of MB) would stall the watcher.
+const TAIL_BYTES = 2 * 1024 * 1024;
+// session_meta (first line) carries the session id and cwd and can be large because of embedded instructions.
+const HEAD_BYTES = 1024 * 1024;
 const QUIET_TOOLS = new Set(['wait', 'wait_agent', 'list_agents', 'tool_search']);
 
 /** Files touched by an apply_patch body ("*** Update File: path" …). */
@@ -111,8 +117,8 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
   async function recentFiles() {
     const found = [];
     const now = Date.now();
-    // Logs are grouped by date (YYYY/MM/DD); look at today and yesterday.
-    for (const days of [0, 1]) {
+    // Logs are grouped by start date (YYYY/MM/DD); the mtime check below picks the ones still being written.
+    for (let days = 0; days <= LOOKBACK_DAYS; days++) {
       const d = new Date(now - days * 86_400_000);
       const folder = join(dir, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
       let names = [];
@@ -224,26 +230,48 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
     if (out.length) emit(out);
   }
 
+  async function readRange(path, start, end) {
+    const handle_ = await open(path, 'r');
+    try {
+      const { buffer, bytesRead } = await handle_.read(Buffer.alloc(end - start), 0, end - start, start);
+      return buffer.subarray(0, bytesRead);
+    } finally {
+      await handle_.close();
+    }
+  }
+
+  async function skipToTail(file, size) {
+    const head = (await readRange(file.path, 0, Math.min(size, HEAD_BYTES))).toString('utf8');
+    const end = head.indexOf('\n');
+    if (end > 0) { try { handle(file, JSON.parse(head.slice(0, end)), false); } catch {} }
+    file.offset = size - TAIL_BYTES;
+    file.skipPartial = true;
+  }
+
   async function poll() {
     for (const { path, size, mtime } of await recentFiles()) {
       let file = files.get(path);
       if (!file) files.set(path, (file = { path, offset: 0, partial: '' }));
       if (size <= file.offset) continue;
       const live = Date.now() - mtime < LIVE;
-      let handle_;
       try {
-        handle_ = await open(path, 'r');
-        const { buffer, bytesRead } = await handle_.read(Buffer.alloc(size - file.offset), 0, size - file.offset, file.offset);
-        file.offset += bytesRead;
-        const lines = (file.partial + buffer.subarray(0, bytesRead).toString('utf8')).split('\n');
+        if (file.offset === 0 && size > TAIL_BYTES) await skipToTail(file, size);
+        let chunk = await readRange(path, file.offset, size);
+        file.offset += chunk.length;
+        if (file.skipPartial) {
+          // The tail starts mid-line; newline bytes never occur inside a UTF-8 multibyte sequence, so cutting at the first one is safe.
+          const nl = chunk.indexOf(10);
+          if (nl < 0) continue;
+          chunk = chunk.subarray(nl + 1);
+          file.skipPartial = false;
+        }
+        const lines = (file.partial + chunk.toString('utf8')).split('\n');
         file.partial = lines.pop();
         for (const line of lines) {
           if (!line.trim()) continue;
           try { handle(file, JSON.parse(line), live); } catch {}
         }
-      } catch {} finally {
-        await handle_?.close();
-      }
+      } catch {}
     }
   }
 
