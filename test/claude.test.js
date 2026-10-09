@@ -254,3 +254,61 @@ test('contextOf: tokens in the window, and when its size is known', async () => 
   assert.equal(contextOf(reply(10, 49_000), () => 1_000_000).known, true);
   assert.equal(contextOf({ type: 'user', message: {} }), null);
 });
+
+const reminder = (text) => ({ type: 'attachment', rendered: [{ content: `<system-reminder>\n${text}\n</system-reminder>`, renderedRole: 'system' }] });
+
+test('ultracodeSwitch: only the on/off system-reminder counts', async () => {
+  const { ultracodeSwitch } = await import('../bridge/adapters/claude.js');
+  assert.equal(ultracodeSwitch(reminder('Ultracode is on: optimize for the most exhaustive answer')), true);
+  assert.equal(ultracodeSwitch(reminder('Ultracode is off: use the Workflow tool only on request')), false);
+  // The same words inside a prompt snapshot or a user message are documentation, not a switch.
+  assert.equal(ultracodeSwitch({ type: 'attachment', attachment: { type: 'prompt_snapshot' }, rendered: [{ content: 'Ultracode is on for the session (a system-reminder confirms it)' }] }), null);
+  assert.equal(ultracodeSwitch({ type: 'user', message: { content: 'Ultracode is on' } }), null);
+  assert.equal(ultracodeSwitch({ type: 'attachment' }), null);
+});
+
+test('contextOf: ultracode relabels only the xhigh effort it is logged as', async () => {
+  const { contextOf } = await import('../bridge/adapters/claude.js');
+  const reply = (effort) => ({ type: 'assistant', sessionId: 's1', timestamp: '2026-09-30T10:00:00Z', effort, message: { usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 1000 } } });
+  assert.equal(contextOf(reply('xhigh'), () => null, true).effort, 'ultracode');
+  assert.equal(contextOf(reply('xhigh'), () => null, false).effort, 'xhigh');
+  assert.equal(contextOf(reply('low'), () => null, true).effort, 'low');
+});
+
+test('watchClaude shows ultracode from the reminder until it is turned off', async (t) => {
+  const { mkdir } = await import('node:fs/promises');
+  const { watchClaude } = await import('../bridge/adapters/claude.js');
+  const dir = await mkdtemp(join(tmpdir(), 'dotpals-claude-'));
+  let stop = () => {};
+  t.after(async () => {
+    stop();
+    await new Promise((r) => setTimeout(r, 150));
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await mkdir(join(dir, 'C--work-proj'));
+  const file = join(dir, 'C--work-proj', 'ultra.jsonl');
+  const ts = (s) => new Date(Date.now() - 10_000 + s * 1000).toISOString();
+  const reply = (id, s, effort) => ({ type: 'assistant', uuid: id, sessionId: 'ultra', timestamp: ts(s), cwd: '/work/proj', effort, message: { model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10 + s, cache_creation_input_tokens: 0, cache_read_input_tokens: 1000 } } });
+  const write = (rows) => writeFile(file, `${rows.map((l) => JSON.stringify(l)).join('\n')}\n`);
+
+  const contexts = [];
+  stop = watchClaude(createActivityLog(), { dir, interval: 50, emit: () => {}, state: () => {}, context: (session, label, next) => contexts.push(next.effort) });
+  const settle = () => new Promise((r) => setTimeout(r, 300));
+
+  const first = [
+    { type: 'attachment', rendered: [{ content: '<system-reminder>\nUse the Workflow tool. Ultracode is on for the session.\n</system-reminder>' }] },
+    reply('a0', 0, 'low'),
+  ];
+  await write(first);
+  await settle();
+  assert.equal(contexts.at(-1), 'low', 'prose that merely mentions ultracode does not switch it on');
+
+  const on = [...first, reminder('Ultracode is on: optimize for the most exhaustive answer'), reply('a1', 1, 'xhigh')];
+  await write(on);
+  await settle();
+  assert.equal(contexts.at(-1), 'ultracode');
+
+  await write([...on, reminder('Ultracode is off: back to the opt-in rule'), reply('a2', 2, 'xhigh')]);
+  await settle();
+  assert.equal(contexts.at(-1), 'xhigh', 'turned off, so the logged effort shows again');
+});

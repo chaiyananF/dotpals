@@ -13,6 +13,11 @@ import { clip, clipEnds, clipText, folderName, relative, toPatch } from '../acti
 
 const HARNESS = 'claude';
 
+// Claude Code logs ultracode as effort "xhigh" plus a one-off system-reminder attachment; the transcript never carries the word as an effort value.
+const ULTRACODE_EFFORT = 'xhigh';
+// Only the reminder itself: the same words also sit in prompt snapshots and in the Workflow tool description.
+const ULTRACODE_REMINDER = /^\s*<system-reminder>\s*Ultracode is (on|off)\b/i;
+
 // Paths are shown relative to the folder the session started in; the working
 // directory can drift (e.g. after a `cd`), but the project root doesn't.
 const roots = new Map(); // session → first cwd seen
@@ -267,24 +272,34 @@ const LIVE = 30_000;             // written to in the last 30s: show it on the p
  * `skip(session)` is true for sessions the hooks already cover; `cwd(session, folder)`
  * hears the folder each session started in.
  */
+/** true / false when a transcript record is the reminder that turns ultracode on / off, otherwise null. */
+export function ultracodeSwitch(o) {
+  if (o?.type !== 'attachment' || !Array.isArray(o.rendered)) return null;
+  for (const part of o.rendered) {
+    const m = typeof part?.content === 'string' ? ULTRACODE_REMINDER.exec(part.content) : null;
+    if (m) return m[1].toLowerCase() === 'on';
+  }
+  return null;
+}
+
 /**
  * How full the context window is after an assistant reply: { used, size, known, at }.
  * Transcripts record tokens but not the window size. `size` is known when Claude
  * Code told the status line (`sizeOf`), or when usage is past 200k (so it must be
  * a 1M window). Otherwise it's a 200k guess, `known: false`.
  */
-export function contextOf(o, sizeOf = () => null) {
+export function contextOf(o, sizeOf = () => null, ultracode = false) {
   const u = o?.type === 'assistant' && !o.isSidechain ? o.message?.usage : null;
   if (!u) return null;
   const used = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
   if (!used) return null;
   const told = sizeOf(o.sessionId);
   const size = told ?? (used > 200_000 ? 1_000_000 : 200_000);
-  return { used, size, known: !!told || used > 200_000, at: Date.parse(o.timestamp) || Date.now(), model: o.message?.model ?? null, effort: o.effort ?? null };
+  return { used, size, known: !!told || used > 200_000, at: Date.parse(o.timestamp) || Date.now(), model: o.message?.model ?? null, effort: ultracode && o.effort === ULTRACODE_EFFORT ? 'ultracode' : o.effort ?? null };
 }
 
 export function watchClaude(log, { emit, state, context = () => {}, cwd = () => {}, title = () => {}, sizeOf, skip = () => false, dir = join(homedir(), '.claude', 'projects'), interval = 1500 } = {}) {
-  const files = new Map(); // path → { offset, partial, reader, context }
+  const files = new Map(); // path → { offset, partial, reader, context, ultracode }
   let stopped = false;
 
   async function recentFiles() {
@@ -330,12 +345,16 @@ export function watchClaude(log, { emit, state, context = () => {}, cwd = () => 
               if (record.type === 'custom-title' && record.sessionId === session && typeof record.customTitle === 'string' && record.customTitle.trim()) title(session, record.customTitle.trim());
             } catch {}
           }
+          for (const line of lines) {
+            if (!line.includes('ltracode is ')) continue;
+            try { file.ultracode = ultracodeSwitch(JSON.parse(line)) ?? file.ultracode; } catch {}
+          }
           // Context window (for every session, hooks or not): the newest reply's usage.
           for (let i = lines.length - 1; i >= 0; i--) {
             if (!lines[i].includes('"usage"')) continue;
             let o;
             try { o = JSON.parse(lines[i]); } catch { continue; }
-            const ctx = contextOf(o, sizeOf);
+            const ctx = contextOf(o, sizeOf, file.ultracode);
             if (!ctx) continue;
             if (o.cwd) file.reader.label ??= folderName(o.cwd);
             if (ctx.used !== file.context?.used || ctx.effort !== file.context?.effort || ctx.model !== file.context?.model) context(session, file.reader.label ?? folderName(o.cwd), (file.context = ctx));
