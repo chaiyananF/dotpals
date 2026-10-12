@@ -239,7 +239,7 @@ export function createTeamStore({ directory = home() } = {}) {
       return transact((state) => {
         const job = (state.dispatches ?? []).find((row) => row.id === id);
         if (!job) fail('Dispatch not found.', 404);
-        for (const key of ['status', 'error', 'response', 'childPid', 'artifactDir', 'startedAt', 'finishedAt']) if (Object.hasOwn(patch, key)) job[key] = patch[key];
+        for (const key of ['status', 'error', 'response', 'childPid', 'artifactDir', 'startedAt', 'finishedAt', 'progress']) if (Object.hasOwn(patch, key)) job[key] = patch[key];
         job.updatedAt = new Date().toISOString();
         const task = taskOf(state, job.taskId);
         if (task.coordination === 'external' && ['succeeded', 'failed', 'cancelled'].includes(job.status) && !(state.dispatches ?? []).some((row) => row.taskId === task.id && ['queued', 'running', 'interrupted'].includes(row.status))) {

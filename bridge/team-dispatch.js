@@ -8,6 +8,9 @@ import { home } from './config.js';
 import { isFolder } from './handoff.js';
 import { isSessionId, isSessionModel } from './session-links.js';
 import { TEAM_ROLES, TeamError, teamSession } from './team-store.js';
+import { createRunProgress } from './dispatch-progress.js';
+import { createClaudeResult } from './claude-result.js';
+import { DISPATCH_TIMEOUT_MS, runTiming } from '../src/run-progress.js';
 
 const providers = ['claude', 'codex', 'antigravity'];
 const coordinatorModels = { claude: 'claude-opus-5-5', codex: 'gpt-6.1-sol' };
@@ -40,8 +43,9 @@ function executable(provider) {
   return null;
 }
 
-export function createTeamDispatch({ store, links, catalog, send, root, port }) {
+export function createTeamDispatch({ store, links, catalog, send, root, port, spawnProcess = spawn }) {
   const children = new Map();
+  const unavailableProgress = new Set();
   let stopped = false;
   let pumping = false;
   const changed = (job) => { send('team-dispatch', { taskId: job.taskId, dispatchId: job.id }); send('team-task', { taskId: job.taskId }); };
@@ -119,8 +123,13 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       if (previous.fingerprint !== plan.fingerprint) throw new TeamError('Dispatch key already has different content.', 409);
       return previous;
     }
-    if (known?.busy) throw new TeamError('That native session is currently working. Use its current window or wait.', 409);
-    if (nativeId && store.dispatches().some((job) => job.provider === provider && job.nativeId === nativeId && ['queued', 'running', 'interrupted'].includes(job.status))) throw new TeamError('A run already owns this native session. Inspect the saved run first.', 409);
+    if (known?.busy) {
+      const at = new Date(known.stateAt ?? NaN);
+      const recordedAt = Number.isNaN(at.getTime()) ? 'unknown' : at.toISOString();
+      throw new TeamError(`That native session is currently working. Use its current window or wait. Recorded state=${known.state ?? 'unknown'}; stateAt=${recordedAt}; source=${known.stateSource ?? 'unknown'}; event=${known.stateEvent ?? 'unknown'}.`, 409);
+    }
+    const owner = nativeId && store.dispatches().find((job) => job.provider === provider && job.nativeId === nativeId && ['queued', 'running', 'interrupted'].includes(job.status));
+    if (owner) throw new TeamError(`A run already owns this native session. Inspect the saved run first. Run=${owner.id}; status=${owner.status}.`, 409);
     if (store.dispatches().filter((job) => ['queued', 'running'].includes(job.status)).length >= 20) throw new TeamError('Dispatch queue is full. Wait for current runs.', 409);
     const prepared = store.prepareDispatch(plan);
     changed(prepared.job);
@@ -140,6 +149,8 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
     let errors = '';
     let observedId = null;
     let timer;
+    let progress;
+    const claudeResult = job.provider === 'claude' ? createClaudeResult() : null;
     try {
       mkdirSync(directory, { recursive: true });
       const channel = job.provider === 'antigravity'
@@ -155,7 +166,7 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       const mcpConfig = join(directory, 'mcp.json');
       writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { dotpals: mcp } }, null, 2), { mode: 0o600 });
       const args = [];
-      if (job.provider === 'claude') args.push(...(job.nativeId ? ['--resume', job.nativeId] : []), ...(job.model ? ['--model', job.model] : []), ...(job.effort ? ['--effort', job.effort] : []), ...(!job.allowCodeWrites ? ['--permission-mode', 'plan'] : []), '--mcp-config', mcpConfig, '--allowedTools', 'mcp__dotpals__*', ...(job.allowedCommands ?? []).map((command) => `Bash(${command})`), '--add-dir', job.codeDir, directory, '--output-format', 'json', '--print');
+      if (job.provider === 'claude') args.push(...(job.nativeId ? ['--resume', job.nativeId] : []), ...(job.model ? ['--model', job.model] : []), ...(job.effort ? ['--effort', job.effort] : []), ...(!job.allowCodeWrites ? ['--permission-mode', 'plan'] : []), '--mcp-config', mcpConfig, '--allowedTools', 'mcp__dotpals__*', ...(job.allowedCommands ?? []).map((command) => `Bash(${command})`), '--add-dir', job.codeDir, directory, '--output-format', 'stream-json', '--verbose', '--print');
       if (job.provider === 'antigravity') args.push(...(job.nativeId ? ['--conversation', job.nativeId] : []), '--model', job.model, ...(job.effort ? ['--effort', job.effort] : []), ...(!job.allowCodeWrites ? ['--mode', 'plan'] : []), '--add-dir', job.codeDir, '--add-dir', directory, '--output-format', 'json', '--print-timeout', '30m', '--print', `Read ${join(directory, 'brief.md')} and perform only its current assignment. Your run artifacts directory is ${directory}.`);
       if (job.provider === 'codex') {
         args.push('exec', '-s', job.allowCodeWrites ? 'workspace-write' : 'read-only', '-C', job.codeDir, ...(job.effort ? ['-c', `model_reasoning_effort="${job.effort}"`] : []), ...(job.model ? ['-m', job.model] : []));
@@ -166,8 +177,22 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
         args.push('-c', 'mcp_servers.dotpals.default_tools_approval_mode="approve"', ...(job.allowCodeWrites ? ['--add-dir', directory] : []), ...(job.nativeId ? ['resume', job.nativeId] : []), '--json', '-o', responseFile, '-');
       }
       status(job.id, { status: 'running', artifactDir: directory, startedAt: new Date().toISOString() });
+      const progressChanged = (progress) => {
+        // A disconnected observer must not disable persisted progress or work.
+        try { send('team-progress', { taskId: job.taskId, dispatchId: job.id, progress }); } catch {}
+      };
+      progress = createRunProgress({ publish: (progress) => {
+        store.dispatchState(job.id, { progress: { ...progress, available: true } });
+        progressChanged({ ...progress, available: true });
+      }, onError: () => {
+        // Observability must not kill otherwise valid provider work. The warning
+        // is an in-memory fallback because this storage write already failed.
+        unavailableProgress.add(job.id);
+        progressChanged({ ...store.dispatch(job.id).progress, available: false });
+      } });
+      progress.flush();
       const code = await new Promise((resolveRun, rejectRun) => {
-        const child = spawn(executable(job.provider), args, { cwd: job.cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...boundEnv } });
+        const child = spawnProcess(executable(job.provider), args, { cwd: job.cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...boundEnv } });
         const control = { child, cancel: () => { cancelled = true; child.kill(); } };
         children.set(job.id, control);
         if (child.pid) status(job.id, { childPid: child.pid });
@@ -175,25 +200,34 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
+          progress.stdout(chunk);
+          if (claudeResult) { claudeResult.push(chunk); return; }
           if (output.length + chunk.length > 8 * 1024 * 1024) { errors = 'CLI output exceeded 8 MB.'; child.kill(); return; }
           output += chunk;
           try { appendFileSync(join(directory, 'stdout.log'), chunk, { mode: 0o600 }); }
           catch (err) { errors = `Could not save CLI output: ${err.message}`; child.kill(); }
         });
-        child.stderr.on('data', (chunk) => { if (errors.length < 1024 * 1024) { errors += chunk; try { appendFileSync(join(directory, 'stderr.log'), chunk, { mode: 0o600 }); } catch (err) { errors = `Could not save CLI diagnostics: ${err.message}`; child.kill(); } } });
+        child.stderr.on('data', (chunk) => { progress.stderr(chunk); if (errors.length < 1024 * 1024) { errors += chunk; try { appendFileSync(join(directory, 'stderr.log'), chunk, { mode: 0o600 }); } catch (err) { errors = `Could not save CLI diagnostics: ${err.message}`; child.kill(); } } });
         child.once('error', rejectRun);
         child.once('close', resolveRun);
-        timer = setTimeout(() => { errors += '\nCLI timed out after 30 minutes.'; child.kill(); }, 30 * 60 * 1000);
+        timer = setTimeout(() => { errors += '\nCLI timed out after 30 minutes.'; child.kill(); }, DISPATCH_TIMEOUT_MS);
         if (job.provider === 'antigravity') child.stdin.end(); else child.stdin.end(prompt);
       });
-      const records = output.trim().split(/\r?\n/).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
-      try { const whole = JSON.parse(output); if (whole && typeof whole === 'object' && !Array.isArray(whole)) records.push(whole); } catch {}
+      progress.close();
+      const records = claudeResult ? [] : output.trim().split(/\r?\n/).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+      if (!claudeResult) { try { const whole = JSON.parse(output); if (whole && typeof whole === 'object' && !Array.isArray(whole)) records.push(whole); } catch {} }
       let response = '';
       let successful = false;
       let providerError = '';
       if (job.provider === 'claude') {
-        const result = records.findLast((row) => row.session_id);
-        observedId = result?.session_id ?? null;
+        const result = claudeResult.finish();
+        const diagnostic = claudeResult.diagnostics();
+        // Do not persist verbose tool results or intermediate reasoning/text.
+        if (result) writeFileSync(join(directory, 'stdout.log'), JSON.stringify(result), { mode: 0o600 });
+        else providerError = `Claude did not return a valid final result (exit ${code}).${diagnostic.oversizedRecords ? ' Output records exceeding 8 MiB were skipped.' : ''}${diagnostic.malformedRecords ? ' Malformed output records were skipped.' : ''} ${errors.trim().slice(-4000)}`.trim();
+        // Confirm genuine init identity only after exit, even on failure, so
+        // interrupted native work can be resumed. Init never implies success.
+        observedId = result?.session_id ?? diagnostic.sessionId ?? null;
         response = String(result?.result ?? '');
         successful = code === 0 && result?.subtype === 'success' && !result?.is_error;
       } else if (job.provider === 'antigravity') {
@@ -210,16 +244,17 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       if (!observedId || !isSessionId(observedId)) successful = false;
       if (cancelled) successful = false;
       if (response) writeFileSync(responseFile, response, { mode: 0o600 });
-      const error = successful ? '' : cancelled ? 'Stopped by the user. Inspect the checkout before continuing.' : (!observedId ? `CLI did not return a confirmed session ID (exit ${code}). ${errors.trim().slice(-2000)}` : providerError || response || errors.trim().slice(-4000) || `CLI failed (exit ${code}).`);
+      const error = successful ? '' : cancelled ? 'Stopped by the user. Inspect the checkout before continuing.' : providerError || (!observedId ? `CLI did not return a confirmed session ID (exit ${code}). ${errors.trim().slice(-2000)}` : response || errors.trim().slice(-4000) || `CLI failed (exit ${code}).`);
       status(job.id, { status: cancelled ? 'cancelled' : successful ? 'succeeded' : 'failed', response: response.slice(0, 64000), error: error.slice(0, 8000), finishedAt: new Date().toISOString() });
       if (successful) store.read(job.taskId, job.assignmentId, { recipientId: job.participantId });
       store.send(job.taskId, { from: job.participantId, to: job.from, type: successful ? 'result' : 'blocker', body: (successful ? response || 'CLI completed with no final text.' : error).slice(0, 64000), idempotencyKey: `dispatch-result:${job.id}` });
       changed(store.dispatch(job.id));
     } catch (err) {
+      progress?.close();
       const control = children.get(job.id); if (control && control.child.exitCode === null) control.child.kill();
       status(job.id, { status: cancelled ? 'cancelled' : 'failed', error: err.message.slice(0, 8000), artifactDir: directory, finishedAt: new Date().toISOString() });
       try { store.send(job.taskId, { from: job.participantId, to: job.from, type: 'blocker', body: err.message.slice(0, 64000), idempotencyKey: `dispatch-result:${job.id}` }); } catch {}
-    } finally { clearTimeout(timer); children.delete(job.id); setImmediate(pump); }
+    } finally { progress?.close(); clearTimeout(timer); children.delete(job.id); setImmediate(pump); }
   }
   function pump() {
     if (stopped || pumping) return;
@@ -232,7 +267,11 @@ export function createTeamDispatch({ store, links, catalog, send, root, port }) 
       }
     } finally { pumping = false; }
   }
-  const publicJob = (job) => { const { fingerprint, idempotencyKey, ...visible } = job; return visible; };
+  const publicJob = (job) => { const { fingerprint, idempotencyKey, ...visible } = job; return { ...visible, progress: {
+    lastActivityAt: null, lastActivityKind: null, lastActivitySource: null, stdoutBytes: null, stderrBytes: null,
+    ...job.progress, ...runTiming(job),
+    available: unavailableProgress.has(job.id) ? false : job.progress?.available ?? null,
+  } }; };
   return { options, submit: (input) => publicJob(submit(input)),
     list: (taskId) => store.dispatches(taskId).map(publicJob),
     get: (id) => { const job = store.dispatch(id); if (!job) throw new TeamError('Dispatch not found.', 404); return publicJob(job); },

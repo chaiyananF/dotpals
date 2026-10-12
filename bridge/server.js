@@ -82,6 +82,10 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const KINDS = new Set(['prompt', 'read', 'edit', 'write', 'run', 'search', 'web', 'agent', 'mcp', 'skill', 'plan', 'tool', 'done', 'error', 'compact']);
 const STATUSES = new Set(['running', 'waiting', 'ok', 'failed', 'stopped', 'info']);
 const DAY = 86_400_000;
+const stateEventOf = (event) => {
+  const name = event.hook_event_name ?? event.type ?? event.event;
+  return typeof name === 'string' ? clip(name.replace(/[\r\n\0]/g, ' '), 80) : null;
+};
 
 /**
  * Activity history on disk (~/.dotpals/history.json), so the Summary, Files and
@@ -450,7 +454,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     helperFromHook(event, session);
     if (event.hook_event_name === 'Stop' && event.transcript_path) addSummary(changed.find((e) => e.kind === 'done'), event.transcript_path);
     const next = toAgentState(event);
-    return next ? setState(session, 'claude', label, next) : null;
+    return next ? setState(session, 'claude', label, { ...next, source: 'claude-hook', event: stateEventOf(event) }) : null;
   }
 
   // Attach Claude's closing message to a finished turn. The transcript can lag
@@ -516,7 +520,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     stopClaude();
     stopClaude = process.env.DOTPALS_CLAUDE_LOGS === '0' || !enabled('claude') ? () => {} : watchClaude(activity, {
       emit: publish,
-      state: (session, label, next, at) => setState(session, 'claude', label, next, at),
+      state: (session, label, next, at) => setState(session, 'claude', label, { ...next, source: 'claude-transcript' }, at),
       context: (session, label, ctx) => setContext(session, 'claude', label, ctx),
       sizeOf: claudeContextSize,
       skip: (session) => hooked.has(session),
@@ -558,7 +562,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     }));
     helperFromEvent(session, harness, event.helper);
     const next = toAgentState(event);
-    return next ? setState(session, harness, label, next) : null;
+    return next ? setState(session, harness, label, { ...next, source: 'generic-event', event: stateEventOf(event) }) : null;
   }
 
   // -- Other agents' hooks and plugins: POST /hook?agent=<id> -----------------------
@@ -575,7 +579,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
     if (session) noteSession(session, cwd);
     publish(entries);
     if (session) lastSeen[id] = Math.max(lastSeen[id] ?? 0, Date.now());
-    return state && session ? setState(session, id, label, state) : null;
+    return state && session ? setState(session, id, label, { ...state, source: `${id}-hook`, event: stateEventOf(event) }) : null;
   }
 
   function handleEvent(event, agent) {
@@ -595,7 +599,7 @@ export function startBridge({ port = Number(process.env.DOTPALS_PORT || process.
       if (!on) { watchers.get(a.id)(); watchers.delete(a.id); continue; }
       watchers.set(a.id, a.watch(activity, {
         emit: publish,
-        state: (session, label, next, at) => setState(session, a.id, label, next, at),
+        state: (session, label, next, at) => setState(session, a.id, label, { source: `${a.id}-transcript`, ...next }, at),
         context: (session, label, ctx) => setContext(session, a.id, label, ctx),
         cwd: (session, cwd, parent, transcript, internal) => noteSession(session, cwd, parent, transcript, internal),
       }));

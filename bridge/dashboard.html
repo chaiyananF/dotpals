@@ -656,6 +656,7 @@
     source.addEventListener('team-task', () => tasksPanel.changed());
     source.addEventListener('team-message', () => tasksPanel.changed());
     source.addEventListener('team-dispatch', () => tasksPanel.changed());
+    source.addEventListener('team-progress', (event) => { try { tasksPanel.progress(JSON.parse(event.data)); } catch {} });
     source.addEventListener('open', () => tasksPanel.changed());
     const refreshStatus = async () => { try { status = await api('/api/status'); renderSettings(); renderAgents(); } catch {} };
     refreshStatus();

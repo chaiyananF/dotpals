@@ -10,14 +10,14 @@ const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const PARTICIPANT_ID = '22222222-2222-4222-8222-222222222222';
 const RUN_ID = '33333333-3333-4333-8333-333333333333';
 
-async function withMcp(role, body) {
+async function withMcp(role, body, reply = { run: { id: RUN_ID, status: 'queued' } }) {
   const posts = [];
   const bridge = createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       posts.push({ path: req.url, header: req.headers['x-dotpals'], body: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') });
-      res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ run: { id: RUN_ID, status: 'queued' } }));
+      res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify(reply));
     });
   });
   await new Promise((ok) => bridge.listen(0, '127.0.0.1', ok));
@@ -58,4 +58,15 @@ test('MCP dispatch forwards allowedCommands while keeping the bound task, sender
   assert.equal(posts[0].path, '/api/team/dispatch');
   assert.equal(posts[0].header, '1');
   assert.deepEqual(posts[0].body, { agent: 'claude', prompt: 'Build the approved checkout.', allowCodeWrites: true, allowedCommands, idempotencyKey: 'mcp-key', taskId: TASK_ID, from: PARTICIPANT_ID, parentRunId: RUN_ID });
+});
+
+test('MCP run/list preserve observed progress fields without waiting for completion', async () => {
+  const progress = { lastActivityAt: '2026-10-07T00:00:00.000Z', lastActivityKind: 'tool-start', elapsedMs: 5000, remainingMs: 1795000, quietForMs: 1000 };
+  const run = { id: RUN_ID, taskId: TASK_ID, status: 'running', progress, response: '', prompt: 'private assignment' };
+  const read = await withMcp('raphael', async ({ rpc }) => (await rpc('tools/call', { name: 'run', arguments: { runId: RUN_ID, waitSeconds: 0 } })).result, { run });
+  assert.deepEqual(JSON.parse(read.content[0].text).run.progress, progress);
+  const list = await withMcp('raphael', async ({ rpc }) => (await rpc('tools/call', { name: 'runs', arguments: {} })).result, { runs: [run] });
+  const payload = JSON.parse(list.content[0].text);
+  assert.deepEqual(payload.runs[0].progress, progress);
+  assert.equal(payload.runs[0].prompt, undefined);
 });

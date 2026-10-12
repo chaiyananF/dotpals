@@ -73,7 +73,8 @@ test('pattern check runs before the provider and write checks', () => {
 const eight = Array.from({ length: 8 }, (_, i) => `git status ${i}`);
 const accepted = (overrides) => ({ agent: 'claude', prompt: 'check', taskId: task.id, role: 'petros', allowCodeWrites: true, ...overrides });
 // The public submit() hides fingerprint and idempotencyKey, so a replay equals the stored job minus those.
-const visible = ({ fingerprint, idempotencyKey, ...rest }) => rest;
+// Derived progress clocks are covered separately; compare request identity here.
+const visible = ({ fingerprint, idempotencyKey, progress, ...rest }) => rest;
 const reachPrepare = (payload) => {
   assert.throws(() => dispatch.submit(payload), StoppedBeforeSpawn);
   const plan = plans.at(-1);
@@ -93,7 +94,7 @@ test('claude with allowCodeWrites and exactly eight valid commands reaches prepa
 test('same idempotency key and payload returns the existing job', () => {
   const payload = accepted({ idempotencyKey: 'replay-same', allowedCommands: ['git status'] });
   const job = reachPrepare(payload);
-  assert.deepEqual(dispatch.submit(payload), visible(job));
+  assert.deepEqual(visible(dispatch.submit(payload)), visible(job));
 });
 
 test('same idempotency key with different allowedCommands is a 409 conflict', () => {
@@ -109,6 +110,6 @@ test('same idempotency key with different allowedCommands is a 409 conflict', ()
 test('payload without allowedCommands replays its existing job', () => {
   const payload = accepted({ idempotencyKey: 'replay-none' });
   const job = reachPrepare(payload);
-  assert.deepEqual(dispatch.submit(payload), visible(job));
-  assert.deepEqual(dispatch.submit({ ...payload, allowedCommands: [] }), visible(job));
+  assert.deepEqual(visible(dispatch.submit(payload)), visible(job));
+  assert.deepEqual(visible(dispatch.submit({ ...payload, allowedCommands: [] })), visible(job));
 });

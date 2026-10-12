@@ -1,4 +1,5 @@
 // Task mailbox UI. All user/agent content is text, never HTML.
+import { runProgressText } from './run-progress.js';
 const node = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
 const names = { raphael: 'ราฟาเอล', matthew: 'มัทธิว', thomas: 'โธมัส', philip: 'ฟิลิป', petros: 'เปโตร', andrew: 'อันดรูว์', nathaniel: 'นาธาเนียล', user: 'นายท่าน' };
 const typeNames = { assignment: 'งาน', question: 'คำถาม', answer: 'คำตอบ', result: 'ผลการทำงาน', blocker: 'อุปสรรค', note: 'บันทึก' };
@@ -23,6 +24,7 @@ export function mountTasks(host, { api, toast }) {
   let runs = [];
   let runSignature = '';
   let refreshTimer;
+  let progressTimer;
   const head = node('div', 'head');
   head.append(node('h1', '', 'Tasks'), node('span', 'spacer'), button('รีเฟรช', () => refresh()), button('ลงทะเบียนงานเอง', () => { selected = null; generation++; detail = null; composer = null; location.hash = 'tasks/new'; showCreate(); }), button('เริ่มงานใหม่', () => { selected = null; generation++; detail = null; composer = null; location.hash = 'tasks'; showEmpty(); updateQuick(); quick?.prompt.focus(); }, 'primary'));
   const error = node('div', 'team-error'); error.setAttribute('role', 'alert');
@@ -317,13 +319,17 @@ export function mountTasks(host, { api, toast }) {
   }
   function renderRuns() {
     const box = panel.querySelector('.team-runs'); if (!box) return;
-    const signature = JSON.stringify(runs.map((job) => [job.id, job.status, job.updatedAt])); if (signature === runSignature) return; runSignature = signature;
+    const signature = JSON.stringify(runs.map((job) => [job.id, job.status, job.role, job.provider, job.model, job.prompt, job.nativeId, job.response, job.error, job.artifactDir]));
+    if (signature === runSignature) { updateRunProgress(box); return; } runSignature = signature;
     box.replaceChildren(node('h2', '', 'การส่งงานและผลตอบกลับ'));
+    clearInterval(progressTimer);
     if (!runs.length) box.append(node('p', 'team-hint', 'ส่งคำสั่งจากช่องด้านบนเพื่อเริ่มเรียก agent'));
     const states = { queued: 'รอเรียก CLI', running: 'กำลังทำงาน', succeeded: 'CLI ส่งผลกลับแล้ว', failed: 'เรียกไม่สำเร็จ / ติดข้อจำกัด', interrupted: 'การเรียกถูกขัดจังหวะ', cancelled: 'หยุดแล้ว' };
     for (const job of [...runs].reverse()) {
       const row = node('article', 'team-run');
       row.append(node('strong', '', `${names[job.role]} (${job.provider} · ${job.model || 'ค่าเริ่มต้น CLI'})`), node('span', 'team-state', states[job.status] ?? job.status));
+      const progress = node('p', 'team-hint team-run-progress', runProgressText(job));
+      progress.dataset.runId = job.id; row.append(progress);
       const details = node('details'); details.append(node('summary', '', 'คำสั่งและ session'), node('p', 'team-content', job.prompt), node('p', 'team-id', job.nativeId ? `${job.provider}:${job.nativeId}` : 'ยังไม่มี session ID ที่ยืนยันแล้ว')); row.append(details);
       if (job.response) row.append(node('h3', '', job.role === 'raphael' ? 'สรุปจากราฟาเอล — รอคำสั่งถัดไป' : 'ผลจากผู้รับงาน'), node('p', 'team-content', job.response));
       if (job.error) row.append(node('p', 'team-error', job.error));
@@ -332,6 +338,16 @@ export function mountTasks(host, { api, toast }) {
       if (job.response) actions.append(button('นำผลไปส่งต่อ', () => { quick.prompt.value = `ใช้ผลด้านล่างทำงานต่อ โดยยึดคำสั่งปัจจุบันและกติกาทีม\n\nผลจาก ${job.provider} (บริบท):\n${job.response.slice(0, 5000)}${job.response.length > 5000 ? `\n\nผลเต็มอยู่ที่ ${job.artifactDir}\\response.txt` : ''}`; quick.prompt.focus(); quickSlot.scrollIntoView({ block: 'start' }); }));
       row.append(actions); box.append(row);
     }
+    if (runs.some((job) => job.status === 'running')) progressTimer = setInterval(() => {
+      if (host.hidden || !host.isConnected || !box.isConnected) { clearInterval(progressTimer); progressTimer = undefined; return; }
+      updateRunProgress(box);
+    }, 1000);
+  }
+  function updateRunProgress(box = panel.querySelector('.team-runs')) {
+    for (const label of box?.querySelectorAll('.team-run-progress') ?? []) {
+      const job = runs.find((run) => run.id === label.dataset.runId);
+      if (job) label.textContent = runProgressText(job);
+    }
   }
   async function open(id) {
     const ticket = ++generation; selected = id; detail = null; composer = null; renderList(); panel.replaceChildren(node('p', 'team-hint', 'กำลังอ่านงาน…'));
@@ -339,6 +355,7 @@ export function mountTasks(host, { api, toast }) {
   }
   return {
     async activate(id) {
+      runSignature = ''; // restart visible counters when returning from another panel
       if (!metadata) { await run(loadMetadata); if (!metadata) return; }
       tasks = (await run(() => api('/api/team/tasks')))?.tasks ?? tasks; renderList();
       if (id === 'new') { if (!panel.querySelector('form') || selected) { selected = null; generation++; detail = null; composer = null; showCreate(); } updateQuick(); }
@@ -347,6 +364,13 @@ export function mountTasks(host, { api, toast }) {
       else if (selected) await refresh();
     },
     refresh,
+    progress(event) {
+      if (event.taskId !== selected) return;
+      const job = runs.find((run) => run.id === event.dispatchId);
+      if (!job || job.status !== 'running' || !event.progress) return;
+      job.progress = { ...job.progress, ...event.progress };
+      if (!host.hidden) updateRunProgress();
+    },
     changed() { if (host.hidden) return; clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 120); },
   };
 }

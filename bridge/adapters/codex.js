@@ -153,7 +153,7 @@ export function watchCodex(log, { emit, state, context = () => {}, cwd: noteCwd 
     const { session, label, cwd } = file;
     const base = { session, label, harness: HARNESS, at };
     const out = [];
-    const setState = (s, text) => live && state(session, label, { state: s, ...(text ? { text } : {}) }, at);
+    const setState = (s, text) => live && state(session, label, { state: s, source: 'codex-transcript', event: kind, ...(text ? { text } : {}) }, at);
 
     switch (kind) {
       case 'event_msg/user_message':

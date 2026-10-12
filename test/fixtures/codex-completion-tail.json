@@ -1,0 +1,7 @@
+[
+  { "offsetMs": -280, "type": "event_msg", "payload": { "type": "item_completed", "turn_id": "fixture-turn" } },
+  { "offsetMs": -266, "type": "response_item", "payload": { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Fixture finished." }] } },
+  { "offsetMs": -200, "type": "token_usage_record", "payload": { "turn_id": "fixture-turn" } },
+  { "offsetMs": -191, "type": "event_msg", "payload": { "type": "token_count" } },
+  { "offsetMs": 0, "type": "event_msg", "payload": { "type": "task_complete", "turn_id": "fixture-turn", "last_agent_message": "Fixture finished." } }
+]

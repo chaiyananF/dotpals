@@ -124,6 +124,75 @@ Summary payload:
 `blocker` may report incomplete work. Summary saves the task checkpoint and moves
 coordination to `awaiting-user`; it does not mark independent QA or SDLC completion.
 
+## Watching worker activity
+
+`run`, `runs`, their HTTP endpoints and task-bound MCP tools include `progress`:
+`lastActivityAt`, `lastActivityKind`, `lastActivitySource`, `stdoutBytes`,
+`stderrBytes`, `elapsedMs`, `remainingMs`, `quietForMs`, `deadlineAt`, `timeoutMs`,
+`available` (true when saved, null for legacy runs, false after a progress write failure).
+Times use milliseconds; timestamps are ISO strings. Activity timestamps record
+when this broker received data, not the provider's clock. Only fixed activity
+categories are published; prompts, tool arguments, reasoning and diagnostic text
+are never copied into progress. Claude's private `stdout.log` now retains only
+the bounded final result record at exit, discarding verbose intermediate tool/text
+records. There is no intermediate Claude stdout artifact; saved progress metadata
+and stderr remain available for diagnosing an interrupted run.
+Other providers' stdout artifacts, stderr artifacts and final response remain.
+
+Metadata is persisted at most once a second during a run and flushed at exit.
+A separate `team-progress` SSE event updates existing labels without API refetches
+or replacing run details/drafts. If saving progress fails, the worker continues;
+API/SSE reports `available: false` for the lifetime of that broker. This warning
+cannot be guaranteed across restart when the failed storage cannot record it.
+Execution clocks start at launch; queued runs have no deadline. Terminal
+elapsed time freezes at `finishedAt`, with no remaining countdown. Legacy runs
+without activity metadata expose nulls. The existing 30-minute timeout still
+applies; progress does not extend it or prove process liveness.
+
+The Tasks run row shows elapsed time, time left and age of the last observed
+activity, with a local one-second clock while visible. Claude now uses the locally
+verified `--output-format stream-json --verbose` mode so complete message/tool
+events can arrive before its final result. Codex JSONL is followed incrementally.
+Buffered providers may produce no intermediate events; quiet output is shown as
+no new observed activity, never asserted to be a hung worker or percent complete.
+Native IDs are still confirmed only at completion: a valid result ID is preferred;
+otherwise a genuine `system/init` ID is retained for resuming failed work. Init
+alone never implies success. Missing-result failures retain exit code, stderr and
+timeout diagnostics, separately identifying skipped malformed/oversized records.
+Claude retains one line up to
+8 MiB and only its final result, so total intermediate traffic may exceed 8 MiB.
+Oversized/malformed records are discarded; no valid bounded final result means
+failure. Other providers' output limits, permission modes, concurrency guards and
+cancellation controls remain in effect.
+
+## Diagnosing a refused native resume
+
+The session catalog (`GET /api/team/sessions`) includes `state`, `stateAt`
+(epoch milliseconds), `stateSource` and `stateEvent`. `stateAt` is the event time
+used for the current in-memory state; the activity row's `at` is separate.
+Missing state provenance is reported as `unknown`/`null`, never inferred from the
+latest activity. Codex transcript updates identify their record type; bridge hook
+and generic-event updates identify their input channel. HTTP event names use the
+hook name or `type`/`event`, accept strings only, normalize whitespace/control
+characters and are limited to 80 characters. These are recorded
+observations, not a process-liveness probe or a persistent state-transition log.
+
+A native-busy dispatch refusal remains HTTP 409 and includes those diagnostics
+in `error`, so CLI/MCP callers retain them. An owned-run refusal includes its run
+ID and status. Keep that response and the catalog snapshot when investigating a
+suspected stale state, then compare the native transcript and saved run. Do not
+clear a busy state merely because no broker run owns it: the native app may be
+working independently. Idempotent retries still return the already saved request.
+
+`test/session-lifecycle.test.js` replays a sanitized observed completion tail
+through the Codex watcher, catalog and dispatch preparation. Its synthetic ID,
+text and turn keys contain no private conversation data; the final record order
+and relative timing are retained. It covers incremental/split JSONL, watcher
+restart, a subsequent busy turn, failed completion and broker ownership guards.
+The bridge-level test also checks transcript provenance through the real state
+store and HTTP catalog. Tests use a non-executable CLI stub for busy HTTP requests.
+They do not establish the cause of a past refusal or launch a real provider CLI.
+
 ## Delivery and human acceptance
 
 | ID | Action | Expected |

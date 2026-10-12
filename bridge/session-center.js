@@ -63,7 +63,12 @@ export function sessionCatalog(entries, meta, states = new Map()) {
     const row = rows.get(e.session) ?? { session: e.session, ...native, cwd: meta.get(e.session)?.cwd, at: 0, title: meta.get(e.session)?.title || '' };
     if (!meta.get(e.session)?.title && e.kind === 'prompt' && (e.at ?? 0) >= (row.promptAt ?? 0)) { row.title = e.title; row.promptAt = e.at ?? 0; }
     row.at = Math.max(row.at, e.at ?? 0);
-    row.busy = BUSY.has(states.get(e.session)?.state ?? states.get(e.session));
+    const update = states.get(e.session);
+    row.state = update?.state ?? (typeof update === 'string' ? update : 'unknown');
+    row.stateAt = Number.isFinite(update?.at) ? update.at : null;
+    row.stateSource = update?.source ?? 'unknown';
+    row.stateEvent = update?.event ?? null;
+    row.busy = BUSY.has(row.state);
     rows.set(e.session, row);
   }
   return [...rows.values()].sort((a, b) => b.at - a.at);
