@@ -78,6 +78,6 @@
     "@typesafe-ai/sdk": "^0.6.0"
   },
   "devDependencies": {
-    "electron": "^44.5.1"
+    "electron": "^45.0.0"
   }
 }
